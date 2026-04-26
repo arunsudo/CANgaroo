@@ -168,6 +168,16 @@ jobs:
             cp -Pv "$f" "${DEB_DIR}/usr/lib/x86_64-linux-gnu/"
           done
 
+          # preinst: enable universe so apt can resolve libqt6serialbus6 / libqt6charts6
+          {
+            printf '#!/bin/sh\nset -e\n'
+            printf 'if command -v add-apt-repository >/dev/null 2>&1; then\n'
+            printf '  add-apt-repository -y universe 2>/dev/null || true\n'
+            printf '  apt-get update -qq 2>/dev/null || true\n'
+            printf 'fi\n'
+          } > "${DEB_DIR}/DEBIAN/preinst"
+          chmod 755 "${DEB_DIR}/DEBIAN/preinst"
+
           printf '#!/bin/sh\nset -e\nldconfig\n' > "${DEB_DIR}/DEBIAN/postinst"
           chmod 755 "${DEB_DIR}/DEBIAN/postinst"
 
