@@ -1,6 +1,7 @@
 /*
 
   Copyright (c) 2022 Ethan Zonca
+  Copyright (c) 2024 CANgaroo Contributors
 
   This file is part of cangaroo.
 
@@ -20,105 +21,94 @@
 */
 
 #include "SLCANInterface.h"
+#include "SLCANDriver.h"
 
 #include <chrono>
-#include <cstdio>
-#include <iostream>
+#include <array>
 
-#include <QApplication>
+#include <QList>
 #include <QString>
-#include <QStringList>
-#include <QtSerialPort/QSerialPort>
-#include <QtSerialPort/QSerialPortInfo>
 
 #include "core/Backend.h"
-#include "core/BusMessage.h"
 #include "core/MeasurementInterface.h"
-#include <QThread>
 
+// CAN FD DLC nibble → byte count (index is DLC nibble 0x0–0xF)
+static constexpr std::array<uint8_t, 16> kDlcToBytes = {
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 20, 24, 32, 48, 64
+};
 
-SLCANInterface::SLCANInterface(SLCANDriver *driver, int index, QString name, bool fd_support, uint32_t manufacturer)
-  : BusInterface(reinterpret_cast<CanDriver*>(driver)),
-    _manufacturer(manufacturer),
-    _idx(index),
-    _serport(nullptr),
-    _name(name),
-    _rx_linbuf_ctr(0),
-    _rxbuf_head(0),
-    _rxbuf_tail(0),
-    _ts_mode(ts_mode_SIOCSHWTSTAMP)
+static constexpr uint8_t bytesToDlcNibble(int len) noexcept
 {
-    // Set defaults
+    if (len <= 8)  return static_cast<uint8_t>(len);
+    if (len <= 12) return 9;
+    if (len <= 16) return 10;
+    if (len <= 20) return 11;
+    if (len <= 24) return 12;
+    if (len <= 32) return 13;
+    if (len <= 48) return 14;
+    return 15;
+}
+
+static constexpr char hexNibble(uint8_t v) noexcept
+{
+    return v < 10 ? char('0' + v) : char('A' + v - 10);
+}
+
+static constexpr int fromHexNibble(char c) noexcept
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    return -1;
+}
+
+static int64_t nowMicroseconds() noexcept
+{
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+// Standard bitrate index → SLCAN 'S' command suffix
+struct BitrateEntry { unsigned bitrate; const char *cmd; };
+static constexpr std::array<BitrateEntry, 14> kBitrateTable = {{
+    {1000000, "S8"}, {800000,  "S7"}, {500000,  "S6"}, {250000,  "S5"},
+    {125000,  "S4"}, {100000,  "S3"}, {83333,   "S9"}, {75000,   "SA"},
+    {62500,   "SB"}, {50000,   "S2"}, {33333,   "SC"}, {20000,   "S1"},
+    {10000,   "S0"}, {5000,    "SD"},
+}};
+
+// Standard FD bitrate index → SLCAN 'Y' command suffix
+struct FdBitrateEntry { unsigned bitrate; const char *cmd; };
+static constexpr std::array<FdBitrateEntry, 5> kFdBitrateTable = {{
+    {1000000, "Y1"}, {2000000, "Y2"}, {3000000, "Y3"},
+    {4000000, "Y4"}, {5000000, "Y5"},
+}};
+
+
+// ── Construction ─────────────────────────────────────────────────────────────
+
+SLCANInterface::SLCANInterface(SLCANDriver *driver, int index, QString name,
+                               bool fdSupport, Manufacturer manufacturer)
+    : BusInterface(reinterpret_cast<CanDriver *>(driver))
+    , _manufacturer(manufacturer)
+    , _idx(index)
+    , _name(std::move(name))
+    , _fdSupport(fdSupport)
+{
     _settings.setBitrate(500000);
     _settings.setSamplePoint(875);
 
-    _config.supports_canfd = fd_support;
-    _config.supports_timing = false;
-
-    if(fd_support)
+    if (fdSupport)
     {
         _settings.setFdBitrate(2000000);
         _settings.setFdSamplePoint(750);
     }
-
-    _status.can_state.store(state_bus_off);
-    _status.rx_count.store(0);
-    _status.rx_errors.store(0);
-    _status.rx_overruns.store(0);
-    _status.tx_count.store(0);
-    _status.tx_errors.store(0);
-    _status.tx_dropped.store(0);
-
-    _readMessage_ms.store(QDateTime::currentMSecsSinceEpoch());
-    _readMessage_run_ms.store(QDateTime::currentMSecsSinceEpoch());
-
-    _can_msg_queue.clear();
-    _can_msg_tx_queue.clear();
 }
 
-SLCANInterface::~SLCANInterface()
-{
-    // Ensure serial port is closed and freed safely
-    _serport_mutex.lock();
-    if (_serport)
-    {
-        if (_serport->isOpen())
-            _serport->close();
-        delete _serport;
-        _serport = nullptr;
-    }
-    _serport_mutex.unlock();
-}
+SLCANInterface::~SLCANInterface() = default;
 
-QString SLCANInterface::getDetailsStr() const
-{
-    if(_manufacturer == CANable)
-    {
-        if(_config.supports_canfd)
-        {
-            return tr("CANable with CANFD support");
-        }
-        else
-        {
-            return tr("CANable with standard CAN support");
-        }
-    }
-    else if(_manufacturer == WeActStudio)
-    {
-        if(_config.supports_canfd)
-        {
-            return tr("WeAct Studio USB2CAN with CANFD support");
-        }
-        else
-        {
-            return tr("WeAct Studio USB2CAN with standard CAN support");
-        }
-    }
-    else
-    {
-        return tr("Not Supported");
-    }
-}
+
+// ── Identity ─────────────────────────────────────────────────────────────────
 
 QString SLCANInterface::getName() const
 {
@@ -127,86 +117,67 @@ QString SLCANInterface::getName() const
 
 void SLCANInterface::setName(QString name)
 {
-    _name = name;
+    _name = std::move(name);
 }
+
+QString SLCANInterface::getDetailsStr() const
+{
+    const bool fd = _fdSupport;
+    switch (_manufacturer)
+    {
+        case Manufacturer::CANable:
+            return fd ? tr("CANable with CANFD support")
+                      : tr("CANable with standard CAN support");
+        case Manufacturer::WeActStudio:
+            return fd ? tr("WeAct Studio USB2CAN with CANFD support")
+                      : tr("WeAct Studio USB2CAN with standard CAN support");
+    }
+    return tr("SLCAN device");
+}
+
+QString SLCANInterface::getVersion()
+{
+    return _version;
+}
+
+int SLCANInterface::getIfIndex() const noexcept
+{
+    return _idx;
+}
+
+
+// ── Configuration ─────────────────────────────────────────────────────────────
 
 QList<CanTiming> SLCANInterface::getAvailableBitrates()
 {
-    QList<CanTiming> retval;
     QList<unsigned> bitrates;
-    QList<unsigned> bitrates_fd;
+    QList<unsigned> fdBitrates;
 
-    QList<unsigned> samplePoints;
-    QList<unsigned> samplePoints_fd;
-
-    if(_manufacturer == CANable)
+    switch (_manufacturer)
     {
-        bitrates.append({10000, 20000, 50000, 83333, 100000, 125000, 250000, 500000, 800000, 1000000});
-        bitrates_fd.append({2000000, 5000000});
-        samplePoints.append({875});
-        samplePoints_fd.append({750});
-    }
-    else if(_manufacturer == WeActStudio)
-    {
-        bitrates.append({5000, 10000, 20000, 33333, 50000, 62500, 75000, 83333, 100000, 125000, 250000, 500000, 800000, 1000000});
-        bitrates_fd.append({1000000, 2000000, 3000000, 4000000, 5000000});
-        samplePoints.append({875});
-        samplePoints_fd.append({750});
+        case Manufacturer::CANable:
+            bitrates     = {10000, 20000, 50000, 83333, 100000, 125000, 250000, 500000, 800000, 1000000};
+            fdBitrates   = {2000000, 5000000};
+            break;
+        case Manufacturer::WeActStudio:
+            bitrates     = {5000, 10000, 20000, 33333, 50000, 62500, 75000, 83333,
+                            100000, 125000, 250000, 500000, 800000, 1000000};
+            fdBitrates   = {1000000, 2000000, 3000000, 4000000, 5000000};
+            break;
     }
 
-    unsigned i=0;
-    for (unsigned br : bitrates)
-    {
-        for (unsigned br_fd : bitrates_fd)
-        {
-            for (unsigned sp : samplePoints)
-            {
-                for (unsigned sp_fd : samplePoints_fd)
-                {
-                    retval << CanTiming(i++, br, br_fd, sp,sp_fd);
-                }
-            }
-        }
-    }
+    QList<CanTiming> result;
+    unsigned i = 0;
+    for (unsigned br : std::as_const(bitrates))
+        for (unsigned brFd : std::as_const(fdBitrates))
+            result << CanTiming(i++, br, brFd, 875, 750);
 
-    return retval;
+    return result;
 }
 
 void SLCANInterface::applyConfig(const MeasurementInterface &mi)
 {
-    // Save settings for port configuration
     _settings = mi;
-}
-
-bool SLCANInterface::updateStatus()
-{
-    return false;
-}
-
-bool SLCANInterface::readConfig()
-{
-    return false;
-}
-
-bool SLCANInterface::readConfigFromLink(rtnl_link *link)
-{
-    Q_UNUSED(link);
-    return false;
-}
-
-bool SLCANInterface::supportsTimingConfiguration()
-{
-    return _config.supports_timing;
-}
-
-bool SLCANInterface::supportsCanFD()
-{
-    return _config.supports_canfd;
-}
-
-bool SLCANInterface::supportsTripleSampling()
-{
-    return false;
 }
 
 unsigned SLCANInterface::getBitrate()
@@ -216,415 +187,176 @@ unsigned SLCANInterface::getBitrate()
 
 uint32_t SLCANInterface::getCapabilities()
 {
-    uint32_t retval = 0;
+    uint32_t caps = 0;
 
-    if(_manufacturer == CANable)
+    switch (_manufacturer)
     {
-        retval =
-            BusInterface::capability_config_os |
-            BusInterface::capability_auto_restart |
-            BusInterface::capability_listen_only;
-    }
-    else if(_manufacturer == WeActStudio)
-    {
-        retval =
-            // BusInterface::capability_config_os |
-            // BusInterface::capability_auto_restart |
-            BusInterface::capability_listen_only |
-            BusInterface::capability_custom_bitrate |
-            BusInterface::capability_custom_canfd_bitrate;
+        case Manufacturer::CANable:
+            caps = capability_config_os | capability_auto_restart | capability_listen_only;
+            break;
+        case Manufacturer::WeActStudio:
+            caps = capability_listen_only | capability_custom_bitrate | capability_custom_canfd_bitrate;
+            break;
     }
 
-    if (supportsCanFD())
+    if (_fdSupport)
+        caps |= capability_canfd;
+
+    return caps;
+}
+
+
+// ── Serial helpers ────────────────────────────────────────────────────────────
+
+void SLCANInterface::writePort(const char *cmd)
+{
+    _port->write(cmd);
+    _port->waitForBytesWritten(50);
+}
+
+void SLCANInterface::writePort(const QByteArray &data)
+{
+    _port->write(data);
+    _port->waitForBytesWritten(50);
+}
+
+void SLCANInterface::configureBitrate()
+{
+    if (_settings.isCustomBitrate())
     {
-        retval |= BusInterface::capability_canfd;
+        QByteArray cmd = "S";
+        cmd += QString::number(_settings.customBitrate(), 16).toUpper().rightJustified(6, '0').toLatin1();
+        cmd += '\r';
+        writePort(cmd);
+        return;
     }
 
-    if (supportsTripleSampling())
+    for (const auto &entry : kBitrateTable)
     {
-        retval |= BusInterface::capability_triple_sampling;
+        if (entry.bitrate == _settings.bitrate())
+        {
+            QByteArray cmd = entry.cmd;
+            cmd += '\r';
+            writePort(cmd);
+            return;
+        }
+    }
+    // Fallback: 500 kbit/s
+    writePort("S6\r");
+}
+
+void SLCANInterface::configureFdBitrate()
+{
+    if (_settings.isCustomFdBitrate())
+    {
+        QByteArray cmd = "Y";
+        cmd += QString::number(_settings.customFdBitrate(), 16).toUpper().rightJustified(6, '0').toLatin1();
+        cmd += '\r';
+        writePort(cmd);
+        return;
     }
 
-    return retval;
+    for (const auto &entry : kFdBitrateTable)
+    {
+        if (entry.bitrate == _settings.fdBitrate())
+        {
+            QByteArray cmd = entry.cmd;
+            cmd += '\r';
+            writePort(cmd);
+            return;
+        }
+    }
 }
 
-bool SLCANInterface::updateStatistics()
-{
-    return updateStatus();
-}
 
-uint32_t SLCANInterface::getState()
-{
-    return _status.can_state.load();
-}
-
-int SLCANInterface::getNumRxFrames()
-{
-    return static_cast<int>(_status.rx_count.load());
-}
-
-int SLCANInterface::getNumRxErrors()
-{
-    return _status.rx_errors.load();
-}
-
-int SLCANInterface::getNumTxFrames()
-{
-    return static_cast<int>(_status.tx_count.load());
-}
-
-int SLCANInterface::getNumTxErrors()
-{
-    return _status.tx_errors.load();
-}
-
-int SLCANInterface::getNumRxOverruns()
-{
-    return static_cast<int>(_status.rx_overruns.load());
-}
-
-int SLCANInterface::getNumTxDropped()
-{
-    return static_cast<int>(_status.tx_dropped.load());
-}
-
-int SLCANInterface::getIfIndex()
-{
-    return _idx;
-}
-
-QString SLCANInterface::getVersion()
-{
-    return _version;
-}
+// ── Open / Close ──────────────────────────────────────────────────────────────
 
 void SLCANInterface::open()
 {
-    if(_serport != nullptr)
-    {
-        delete _serport;
-    }
+    _port = std::make_unique<QSerialPort>();
+    _port->setPortName(_name);
+    _port->setBaudRate(1000000);
+    _port->setDataBits(QSerialPort::Data8);
+    _port->setParity(QSerialPort::NoParity);
+    _port->setStopBits(QSerialPort::OneStop);
+    _port->setFlowControl(QSerialPort::NoFlowControl);
 
-    _serport = new QSerialPort(this);
-
-    _serport_mutex.lock();
-    _serport->setPortName(_name);
-    _serport->setBaudRate(1000000);
-    _serport->setDataBits(QSerialPort::Data8);
-    _serport->setParity(QSerialPort::NoParity);
-    _serport->setStopBits(QSerialPort::OneStop);
-    _serport->setFlowControl(QSerialPort::NoFlowControl);
-    _serport->setReadBufferSize(2048);
-
-    if (_serport->open(QIODevice::ReadWrite))
+    if (!_port->open(QIODevice::ReadWrite))
     {
-        //perror("Serport connected!");
-        qRegisterMetaType<QSerialPort::SerialPortError>("SerialThread");
-        //connect(_serport, static_cast<void (QSerialPort::*)(QSerialPort::SerialPortError)>(&QSerialPort::error),  this, &SLCANInterface::handleSerialError);
-        //connect(_serport, SIGNAL(readyRead()),this,SLOT(serport_readyRead()));
-    }
-    else
-    {
-        perror("Serport connect failed!");
-        _serport_mutex.unlock();
+        log_error(tr("SLCAN: failed to open %1: %2").arg(_name, _port->errorString()));
+        _port.reset();
         _isOpen = false;
         _isOffline = true;
         return;
     }
-    _serport->flush();
-    _serport->clear();
+    _port->clear();
 
-    _no_confirm.store(false);
+    // Close any open CAN channel, then probe whether device sends confirmations.
+    // A device that responds to "C\r" with CR is in confirm mode.
+    writePort("C\r");
+    _noConfirm = !_port->waitForReadyRead(50);
+    _port->readAll(); // discard response
 
-    // Close CAN port
-    _serport->write("C\r", 2);
-    _serport->flush();
-    _serport->waitForBytesWritten(50);
-    if(_serport->waitForReadyRead(50))
+    // Read firmware version
+    _port->clear();
+    writePort("V\r");
+    if (_port->waitForReadyRead(50))
     {
-        qApp->processEvents();
-
-        if(_serport->bytesAvailable())
-        {
-            _no_confirm.store(false);
-            _serport->readAll();
-        }
-        else
-        {
-            _no_confirm.store(true);
-        }
-    }
-    else
-    {
-        _no_confirm.store(true);
+        QByteArray resp = _port->readLine();
+        _version = QString::fromLatin1(resp).trimmed();
     }
 
-    // Get Version
-    _serport->clear(QSerialPort::Input);
-    _serport->write("V\r", 2);
-    _serport->flush();
-    _serport->waitForBytesWritten(50);
-    if(_serport->waitForReadyRead(50))
-    {
-        qApp->processEvents();
+    configureBitrate();
+    if (_fdSupport)
+        configureFdBitrate();
 
-        if(_serport->bytesAvailable())
-        {
-            // This is called when readyRead() is emitted
-            QByteArray datas = _serport->readLine();
-            _version = QString(datas).trimmed();
-        }
+    writePort(_settings.isListenOnlyMode() ? "M1\r" : "M0\r");
+    writePort("O\r");
+
+    // Discard any immediate responses from opening
+    if (_port->waitForReadyRead(10))
+        _port->readAll();
+
+    // Reset driver state — only touched from this thread hereafter
+    _rxLineBuffer.clear();
+    _txPendingConfirm.clear();
+
+    {
+        QMutexLocker lock(&_txMutex);
+        _txQueue.clear();
     }
 
-    if(_settings.isCustomBitrate())
-    {
-        QString _custombitrate = QString("%1").arg(_settings.customBitrate(), 6, 16,QLatin1Char('0')).toUpper();
-        std::string _custombitrate_std= 'S' + _custombitrate.toStdString() + '\r';
-        _serport->write(_custombitrate_std.c_str(), _custombitrate_std.length());
-        _serport->flush();
-    }
-    else
-    {
-        // Set the classic CAN bitrate
-        switch(_settings.bitrate())
-        {
-            case 1000000:
-                _serport->write("S8\r", 3);
-                _serport->flush();
-                break;
-            case 800000:
-                _serport->write("S7\r", 3);
-                _serport->flush();
-                break;
-            case 500000:
-                _serport->write("S6\r", 3);
-                _serport->flush();
-                break;
-            case 250000:
-                _serport->write("S5\r", 3);
-                _serport->flush();
-                break;
-            case 125000:
-                _serport->write("S4\r", 3);
-                _serport->flush();
-                break;
-            case 100000:
-                _serport->write("S3\r", 3);
-                _serport->flush();
-                break;
-            case 83333:
-                _serport->write("S9\r", 3);
-                _serport->flush();
-                break;
-            case 75000:
-                _serport->write("SA\r", 3);
-                _serport->flush();
-                break;
-            case 62500:
-                _serport->write("SB\r", 3);
-                _serport->flush();
-                break;
-            case 50000:
-                _serport->write("S2\r", 3);
-                _serport->flush();
-                break;
-            case 33333:
-                _serport->write("SC\r", 3);
-                _serport->flush();
-                break;
-            case 20000:
-                _serport->write("S1\r", 3);
-                _serport->flush();
-                break;
-            case 10000:
-                _serport->write("S0\r", 3);
-                _serport->flush();
-                break;
-            case 5000:
-                _serport->write("SD\r", 3);
-                _serport->flush();
-                break;
-            default:
-                // Default to 10k
-                _serport->write("S0\r", 3);
-                _serport->flush();
-                break;
-        }
-    }
-
-    _serport->waitForBytesWritten(200);
-
-    // Set configured BRS rate
-    if(_config.supports_canfd)
-    {
-        if(_settings.isCustomFdBitrate())
-        {
-            QString _customfdbitrate = QString("%1").arg(_settings.customFdBitrate(), 6, 16,QLatin1Char('0')).toUpper();
-            std::string _customfdbitrate_std= 'Y' + _customfdbitrate.toStdString() + '\r';
-            _serport->write(_customfdbitrate_std.c_str(), _customfdbitrate_std.length());
-            _serport->flush();
-        }
-        else
-        {
-            switch(_settings.fdBitrate())
-            {
-                case 1000000:
-                    _serport->write("Y1\r", 3);
-                    _serport->flush();
-                    break;
-                case 2000000:
-                    _serport->write("Y2\r", 3);
-                    _serport->flush();
-                    break;
-                case 3000000:
-                    _serport->write("Y3\r", 3);
-                    _serport->flush();
-                    break;
-                case 4000000:
-                    _serport->write("Y4\r", 3);
-                    _serport->flush();
-                    break;
-                case 5000000:
-                    _serport->write("Y5\r", 3);
-                    _serport->flush();
-                    break;
-            }
-        }
-    }
-    _serport->waitForBytesWritten(100);
-
-    // Set Listen Only Mode
-    if(_settings.isListenOnlyMode())
-    {
-        _serport->write("M1\r", 3);
-        _serport->flush();
-    }
-    else
-    {
-        _serport->write("M0\r", 3);
-        _serport->flush();
-    }
-    _serport->waitForBytesWritten(100);
-
-    // Open the port
-    _serport->write("O\r", 2);
-    _serport->flush();
-    _serport->waitForBytesWritten(100);
-
-    // Clear serial port receiver
-    if(_serport->waitForReadyRead(10))
-    {
-        qApp->processEvents();
-
-        if(_serport->bytesAvailable())
-        {
-            // This is called when readyRead() is emitted
-            _serport->readAll();
-        }
-    }
-
-    _can_msg_queue.clear();
-    _can_msg_tx_queue.clear();
-    _send_wait_respond.store(0);
-    memset(_rxbuf,0,sizeof(_rxbuf));
-    memset(_rx_linbuf,0,sizeof(_rx_linbuf));
-
-    _isOpen = true;
+    _rxCount   = 0;
+    _rxErrors  = 0;
+    _rxOverruns = 0;
+    _txCount   = 0;
+    _txErrors  = 0;
+    _txDropped = 0;
+    _state     = state_ok;
     _isOffline = false;
-    _status.can_state.store(state_ok);
-    _status.rx_count.store(0);
-    _status.rx_errors.store(0);
-    _status.rx_overruns.store(0);
-    _status.tx_count.store(0);
-    _status.tx_errors.store(0);
-    _status.tx_dropped.store(0);
-
-    // Release port mutex
-    _serport_mutex.unlock();
-}
-
-void SLCANInterface::handleSerialError(QSerialPort::SerialPortError error)
-{
-    if (error == QSerialPort::ResourceError)
-    {
-        perror("error");
-
-        _isOffline = true;
-    }
-
-    QString  ERRORString = "";
-    switch (error) {
-    case QSerialPort::NoError:
-        ERRORString=  "No Error";
-        break;
-    case QSerialPort::DeviceNotFoundError:
-        ERRORString= "Device Not Found";
-        break;
-    case QSerialPort::PermissionError:
-        ERRORString= "Permission Denied";
-        break;
-    case QSerialPort::OpenError:
-        ERRORString= "Open Error";
-        break;
-    /*case QSerialPort::ParityError:
-        ERRORString= "Parity Error";
-        break;
-    case QSerialPort::FramingError:
-        ERRORString= "Framing Error";
-        break;
-    case QSerialPort::BreakConditionError:
-        ERRORString= "Break Condition";
-        break;
-    case QSerialPort::WriteError:
-        ERRORString= "Write Error";
-        break;*/
-    case QSerialPort::ReadError:
-        ERRORString= "Read Error";
-        break;
-    case QSerialPort::ResourceError:
-        ERRORString= "Resource Error";
-        break;
-    case QSerialPort::UnsupportedOperationError:
-        ERRORString= "Unsupported Operation";
-        break;
-    case QSerialPort::UnknownError:
-        ERRORString= "Unknown Error";
-        break;
-    case QSerialPort::TimeoutError:
-        //ERRORString= "Timeout Error";
-        break;
-    case QSerialPort::NotOpenError:
-        ERRORString= "Not Open Error";
-        break;
-    default:
-        ERRORString= "Other Error";
-    }
-    if(ERRORString.size())
-        std::cout << "SerialPortWorker::errorOccurred  ,info is  " << ERRORString.toStdString() << std::endl;
+    _isOpen    = true;
 }
 
 void SLCANInterface::close()
 {
-    _serport_mutex.lock();
-
     _isOpen = false;
-    _status.can_state.store(state_bus_off);
+    _state  = state_bus_off;
 
-    if (_serport && _serport->isOpen())
+    if (_port && _port->isOpen())
     {
-        // Close CAN port
-        _serport->write("C\r", 2);
-        _serport->flush();
-        _serport->waitForBytesWritten(100);
-        _serport->waitForReadyRead(10);
-        _serport->clear();
-        _serport->close();
+        writePort("C\r");
+        _port->waitForReadyRead(20);
+        _port->clear();
+        _port->close();
     }
+    _port.reset();
 
-    _can_msg_queue.clear();
-    _can_msg_tx_queue.clear();
-
-    _serport_mutex.unlock();
+    {
+        QMutexLocker lock(&_txMutex);
+        _txQueue.clear();
+    }
+    _txPendingConfirm.clear();
+    _rxLineBuffer.clear();
 }
 
 bool SLCANInterface::isOpen()
@@ -632,563 +364,334 @@ bool SLCANInterface::isOpen()
     return _isOpen;
 }
 
+
+// ── TX ────────────────────────────────────────────────────────────────────────
+
+// Encodes a BusMessage into an SLCAN ASCII frame (including trailing CR).
+QByteArray SLCANInterface::encodeFrame(const BusMessage &msg)
+{
+    const bool isExtended = msg.isExtended();
+    const bool isFd       = msg.isFD();
+    const bool isBrs      = msg.isBRS();
+    const bool isRtr      = msg.isRTR();
+    const int  dataLen    = msg.getLength();
+
+    if (dataLen < 0 || dataLen > 64)
+        return {};
+
+    char typeChar;
+    if (isFd)
+        typeChar = isBrs ? 'b' : 'd';
+    else if (isRtr)
+        typeChar = 'r';
+    else
+        typeChar = 't';
+
+    if (isExtended)
+        typeChar = static_cast<char>(typeChar - 32); // to uppercase
+
+    const int idLen = isExtended ? ExtIdLen : StdIdLen;
+
+    QByteArray frame;
+    frame.reserve(1 + idLen + 1 + dataLen * 2 + 1);
+    frame.append(typeChar);
+
+    // ID, MSB-first
+    uint32_t id = msg.getId();
+    char idBuf[ExtIdLen];
+    for (int i = idLen - 1; i >= 0; --i)
+    {
+        idBuf[i] = hexNibble(static_cast<uint8_t>(id & 0xF));
+        id >>= 4;
+    }
+    frame.append(idBuf, idLen);
+
+    // DLC nibble
+    frame.append(hexNibble(bytesToDlcNibble(dataLen)));
+
+    // Data bytes
+    for (int i = 0; i < dataLen; ++i)
+    {
+        const uint8_t b = msg.getByte(i);
+        frame.append(hexNibble(b >> 4));
+        frame.append(hexNibble(b & 0x0F));
+    }
+
+    frame.append('\r');
+    return frame;
+}
+
 void SLCANInterface::sendMessage(const BusMessage &msg)
 {
-    _serport_mutex.lock();
-    // SLCAN_MTU plus null terminator
-    can_msg_t can_msg;
+    QByteArray frame = encodeFrame(msg);
+    if (frame.isEmpty())
+        return;
 
-    uint8_t msg_idx = 0;
+    QMutexLocker lock(&_txMutex);
+    _txQueue.append(TxEntry{std::move(frame), msg});
+}
 
-    // Message is FD
-    // Add character for frame type
-    if(msg.isFD())
+// Called from readMessage — drains the TX queue (no mutex held while writing).
+void SLCANInterface::drainTxQueue(QList<BusMessage> &msglist)
+{
+    QList<TxEntry> toSend;
     {
-        if(msg.isBRS())
-        {
-            can_msg.buf[msg_idx] = 'b';
+        QMutexLocker lock(&_txMutex);
+        toSend = std::move(_txQueue);
+        _txQueue.clear();
+    }
 
+    for (auto &entry : toSend)
+    {
+        const qint64 written = _port->write(entry.frame);
+        _port->waitForBytesWritten(50);
+
+        if (written != entry.frame.size())
+        {
+            _txErrors.fetch_add(1, std::memory_order_relaxed);
+            _txDropped.fetch_add(1, std::memory_order_relaxed);
+            continue;
+        }
+
+        if (_noConfirm.load(std::memory_order_relaxed))
+        {
+            // Device does not send confirmations — report TX immediately
+            BusMessage txMsg = entry.msg;
+            txMsg.setRX(false);
+            txMsg.setTimestamp_us(nowMicroseconds());
+            msglist.append(std::move(txMsg));
+            _txCount.fetch_add(1, std::memory_order_relaxed);
         }
         else
         {
-            can_msg.buf[msg_idx] = 'd';
+            _txPendingConfirm.append(std::move(entry.msg));
         }
+    }
+}
+
+void SLCANInterface::handleTxConfirm(QList<BusMessage> &msglist, bool success)
+{
+    if (_txPendingConfirm.isEmpty())
+        return;
+
+    BusMessage txMsg = _txPendingConfirm.takeFirst();
+    txMsg.setRX(false);
+
+    if (success)
+    {
+        txMsg.setTimestamp_us(nowMicroseconds());
+        msglist.append(std::move(txMsg));
+        _txCount.fetch_add(1, std::memory_order_relaxed);
+        _state.store(state_tx_success, std::memory_order_relaxed);
     }
     else
     {
-        // Message is not FD
-        // Add character for frame type
-
-        if (msg.isRTR()) {
-            can_msg.buf[msg_idx] = 'r';
-        }
-        else
-        {
-            can_msg.buf[msg_idx] = 't';
-        }
+        _txErrors.fetch_add(1, std::memory_order_relaxed);
+        _state.store(state_tx_fail, std::memory_order_relaxed);
     }
-
-    // Assume standard identifier
-    uint8_t id_len = SLCAN_STD_ID_LEN;
-    uint32_t tmp = msg.getId();
-
-    // Check if extended
-    if (msg.isExtended())
-    {
-        // Convert first char to upper case for extended frame
-        can_msg.buf[msg_idx] -= 32;
-        id_len = SLCAN_EXT_ID_LEN;
-    }
-    msg_idx++;
-
-    // Add identifier to buffer
-    for(uint8_t j = id_len; j > 0; j--)
-    {
-        // Add nibble to buffer
-        can_msg.buf[j] = (tmp & 0xF);
-        tmp = tmp >> 4;
-        msg_idx++;
-    }
-
-    // Sanity check length
-    int8_t bytes = msg.getLength();
-
-    if(bytes < 0)
-        return;
-    if(bytes > 64)
-        return;
-
-    // If canfd
-    if(bytes > 8)
-    {
-        switch(bytes)
-        {
-        case 12:
-            bytes = 0x9;
-            break;
-        case 16:
-            bytes = 0xA;
-            break;
-        case 20:
-            bytes = 0xB;
-            break;
-        case 24:
-            bytes = 0xC;
-            break;
-        case 32:
-            bytes = 0xD;
-            break;
-        case 48:
-            bytes = 0xE;
-            break;
-        case 64:
-            bytes = 0xF;
-            break;
-        }
-    }
-
-    // Add DLC to buffer
-    can_msg.buf[msg_idx++] = bytes;
-
-    // Add data bytes
-    for (uint8_t j = 0; j < msg.getLength(); j++)
-    {
-        can_msg.buf[msg_idx++] = (msg.getByte(j) >> 4);
-        can_msg.buf[msg_idx++] = (msg.getByte(j) & 0x0F);
-    }
-
-    // Convert to ASCII (2nd character to end)
-    for (uint8_t j = 1; j < msg_idx; j++)
-    {
-        if (can_msg.buf[j] < 0xA) {
-            can_msg.buf[j] += 0x30;
-        } else {
-            can_msg.buf[j] += 0x37;
-        }
-    }
-
-    // Add CR for slcan EOL
-    can_msg.buf[msg_idx++] = '\r';
-
-    // Ensure null termination
-    can_msg.buf[msg_idx] = '\0';
-
-    can_msg.length = msg_idx;
-
-
-    _can_msg_queue.append(can_msg);
-    _can_msg_tx_queue.append(msg);
-
-    _serport_mutex.unlock();
 }
+
+
+// ── RX parsing ────────────────────────────────────────────────────────────────
+
+bool SLCANInterface::parseRxLine(QList<BusMessage> &msglist)
+{
+    if (_rxLineBuffer.isEmpty())
+        return false;
+
+    const char typeChar = _rxLineBuffer.at(0);
+
+    bool isExtended = false;
+    bool isRtr      = false;
+    bool isFd       = false;
+    bool isBrs      = false;
+
+    switch (typeChar)
+    {
+        case 't':                                              break;
+        case 'T': isExtended = true;                          break;
+        case 'r': isRtr = true;                               break;
+        case 'R': isExtended = true; isRtr = true;            break;
+        case 'd': isFd = true;                                break;
+        case 'D': isExtended = true; isFd = true;             break;
+        case 'b': isFd = true; isBrs = true;                  break;
+        case 'B': isExtended = true; isFd = true; isBrs = true; break;
+        default:
+            _rxErrors.fetch_add(1, std::memory_order_relaxed);
+            return false;
+    }
+
+    const int idLen  = isExtended ? ExtIdLen : StdIdLen;
+    const int minLen = 1 + idLen + 1; // type + ID + DLC
+
+    if (_rxLineBuffer.size() < minLen)
+    {
+        _rxErrors.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+
+    // Decode ID
+    uint32_t id = 0;
+    for (int i = 1; i <= idLen; ++i)
+    {
+        const int nibble = fromHexNibble(_rxLineBuffer.at(i));
+        if (nibble < 0)
+        {
+            _rxErrors.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
+        id = (id << 4) | static_cast<uint32_t>(nibble);
+    }
+
+    // Decode DLC
+    const int dlcNibble = fromHexNibble(_rxLineBuffer.at(1 + idLen));
+    if (dlcNibble < 0 || (!isFd && dlcNibble > 8) || (isFd && dlcNibble > 15))
+    {
+        _rxErrors.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+
+    const int dataLen = isFd ? int(kDlcToBytes[dlcNibble]) : dlcNibble;
+    const int expectedSize = minLen + dataLen * 2;
+
+    if (_rxLineBuffer.size() < expectedSize)
+    {
+        _rxErrors.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+
+    BusMessage msg;
+    msg.setTimestamp_us(nowMicroseconds());
+    msg.setInterfaceId(getId());
+    msg.setId(id);
+    msg.setExtended(isExtended);
+    msg.setRTR(isRtr);
+    msg.setFD(isFd);
+    msg.setBRS(isBrs);
+    msg.setRX(true);
+    msg.setErrorFrame(false);
+    msg.setLength(dataLen);
+
+    int pos = minLen;
+    for (int i = 0; i < dataLen; ++i)
+    {
+        const int hi = fromHexNibble(_rxLineBuffer.at(pos));
+        const int lo = fromHexNibble(_rxLineBuffer.at(pos + 1));
+        if (hi < 0 || lo < 0)
+        {
+            _rxErrors.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
+        msg.setByte(i, static_cast<uint8_t>((hi << 4) | lo));
+        pos += 2;
+    }
+
+    msglist.append(std::move(msg));
+    _rxCount.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
+
+// ── Main read/write loop ──────────────────────────────────────────────────────
 
 bool SLCANInterface::readMessage(QList<BusMessage> &msglist, unsigned int timeout_ms)
 {
-    BusMessage msgtx;
-    QDateTime datetime;
-
-    Q_UNUSED(timeout_ms);
-
+    if (_isOffline.load(std::memory_order_relaxed))
     {
-        qint64 now_ms = QDateTime::currentMSecsSinceEpoch();
-        if (now_ms - _readMessage_run_ms.load() >= 1)
-        {
-            _readMessage_run_ms.store(now_ms + 1);
-        }
-        else
-        {
-            return false;
-        }
-    }
-
-    // Don't saturate the thread. Read the buffer every 1ms.
-    QThread::msleep(1);
-
-    if(_isOffline == true)
-    {
-        if(_isOpen)
+        if (_isOpen)
             close();
         return false;
     }
-    else
+
+    // Send any queued TX frames before waiting for RX
+    drainTxQueue(msglist);
+
+    // Block until data arrives (or timeout). This yields the BusListener thread
+    // efficiently rather than busy-spinning.
+    if (!_port->waitForReadyRead(static_cast<int>(timeout_ms)))
+        return !msglist.isEmpty();
+
+    const QByteArray incoming = _port->readAll();
+
+    for (char c : incoming)
     {
+        if (c == '\r')
         {
-            qint64 now_ms = QDateTime::currentMSecsSinceEpoch();
-            if (now_ms - _readMessage_ms.load() > 3000)
+            if (_rxLineBuffer.isEmpty())
             {
-                _status.can_state.store(state_ok);
-                _send_wait_respond.store(0);
+                // Bare CR = device ACK for a previously sent frame
+                if (!_noConfirm.load(std::memory_order_relaxed))
+                    handleTxConfirm(msglist, true);
             }
+            else
+            {
+                parseRxLine(msglist);
+            }
+            _rxLineBuffer.clear();
         }
-    }
-
-    // Transmit all items that are queued
-    can_msg_t tmp;
-
-    _serport_mutex.lock();
-    while (!_can_msg_queue.empty())
-    {
-        // Consume first item
-        tmp = _can_msg_queue.front();
-        _can_msg_queue.pop_front();
-
-        // Write string to serial device
-        if(_serport->write(tmp.buf, tmp.length)==tmp.length)
+        else if (c == '\x07')
         {
-            _send_wait_respond.fetch_add(1);
-            _readMessage_ms.store(QDateTime::currentMSecsSinceEpoch());
+            // BEL = device NACK for a previously sent frame
+            if (!_noConfirm.load(std::memory_order_relaxed) && _rxLineBuffer.isEmpty())
+                handleTxConfirm(msglist, false);
+            _rxLineBuffer.clear();
         }
         else
         {
-            _status.tx_errors.fetch_add(1);
-
-            if(_can_msg_tx_queue.empty() == false)
-            {
-                _can_msg_tx_queue.pop_front();
-            }
+            _rxLineBuffer.append(c);
         }
-
-        _serport->waitForBytesWritten(200);
     }
-    _serport_mutex.unlock();
 
-    // RX doesn't work on windows unless we call this for some reason
-    _rxbuf_mutex.lock();
-    if(_serport->waitForReadyRead(0))
+    // Handle a disconnected device (port closed underneath us)
+    if (!_port->isOpen())
     {
-        qApp->processEvents();
-
-        if(_serport->bytesAvailable())
-        {
-            // This is called when readyRead() is emitted
-            QByteArray datas = _serport->readAll();
-
-            for(int i=0; i<datas.size(); i++)
-            {
-                // If incrementing the head will hit the tail, we've filled the buffer. Reset and discard all data.
-                if(((_rxbuf_head + 1) % RXCIRBUF_LEN) == _rxbuf_tail)
-                {
-                    _rxbuf_head = 0;
-                    _rxbuf_tail = 0;
-                }
-                else
-                {
-                    // Put inbound data at the head locatoin
-                    _rxbuf[_rxbuf_head] = datas.at(i);
-                    _rxbuf_head = (_rxbuf_head + 1) % RXCIRBUF_LEN; // Wrap at MTU
-                }
-            }
-
-        }
-    }
-    _rxbuf_mutex.unlock();
-
-    //////////////////////////
-
-    if (_no_confirm.load())
-    {
-        QMutexLocker locker(&_serport_mutex);
-        while (_can_msg_tx_queue.empty() == false)
-        {
-            _status.tx_count.fetch_add(1);
-            _status.can_state.store(state_tx_success);
-
-            msgtx = _can_msg_tx_queue.front();
-            msgtx.setRX(false);
-            msgtx.setTimestamp_us(std::chrono::duration_cast<std::chrono::microseconds>(
-                                      std::chrono::system_clock::now().time_since_epoch())
-                                      .count());
-            msglist.append(msgtx);
-
-            _can_msg_tx_queue.pop_front();
-        }
+        _isOffline = true;
+        _isOpen    = false;
+        _state     = state_bus_off;
     }
 
-    bool ret = true;
-    _rxbuf_mutex.lock();
-    while(_rxbuf_tail != _rxbuf_head)
-    {
-        // Save data if room
-        if(_rx_linbuf_ctr <= SLCAN_MTU)
-        {
-            _rx_linbuf[_rx_linbuf_ctr] = _rxbuf[_rxbuf_tail];
-            _rx_linbuf_ctr++;
-            // std::cout << "result " << std::hex << int(_rxbuf[_rxbuf_tail]) << std::endl;
-            // std::cout << "_rxbuf_tail " << _rxbuf_tail << std::endl;
-            // std::cout << "_rxbuf_head " << _rxbuf_head << std::endl;
-            // std::cout << "_rx_linbuf_ctr " << _rx_linbuf_ctr << std::endl;
-            // If we have a newline, then we just finished parsing a CAN message.
-            if(_rxbuf[_rxbuf_tail] == '\r')
-            {
-                if(_rx_linbuf_ctr > 1)
-                {
-                    BusMessage msg;
-                    ret = parseMessage(msg);
-                    if(ret == true)
-                    {
-                         msglist.append(msg);
-                        _status.rx_count.fetch_add(1);
-                    }
-                }
-                else
-                {
-                    if(_send_wait_respond.load())
-                    {
-                        qint64 now_ms = QDateTime::currentMSecsSinceEpoch();
-                        if(now_ms - _readMessage_ms.load() < 200)
-                        {
-                            _status.tx_count.fetch_add(1);
-                            _status.can_state.store(state_tx_success);
-                        }
-                        _send_wait_respond.fetch_sub(1);
-
-                        if(_can_msg_tx_queue.empty() == false)
-                        {
-                            if(_status.can_state.load() == state_tx_success)
-                            {
-                                msgtx = _can_msg_tx_queue.front();
-                                msgtx.setRX(false);
-                                msglist.append(msgtx);
-                            }
-                            if(_can_msg_tx_queue.empty() == false)
-                                _can_msg_tx_queue.pop_front();
-                        }
-                    }
-                }
-                _rx_linbuf_ctr = 0;
-            }
-            else if(_rxbuf[_rxbuf_tail] == '\x07')
-            {
-                if(_rx_linbuf_ctr == 1)
-                {
-                    if(_send_wait_respond.load())
-                    {
-                        qint64 now_ms = QDateTime::currentMSecsSinceEpoch();
-                        if(now_ms - _readMessage_ms.load() < 200)
-                        {
-                            _status.tx_errors.fetch_add(1);
-                            _status.can_state = state_tx_fail;
-                        }
-                        _send_wait_respond.fetch_sub(1);
-
-                        if(_can_msg_tx_queue.empty() == false)
-                            _can_msg_tx_queue.pop_front();
-                    }
-                }
-                _rx_linbuf_ctr = 0;
-            }
-        }
-        // Discard data if not
-        else
-        {
-            perror("Linbuf full");
-            _rx_linbuf_ctr = 0;
-        }
-
-        _rxbuf_tail = (_rxbuf_tail + 1) % RXCIRBUF_LEN;
-    }
-    _rxbuf_mutex.unlock();
-
-    return ret;
+    return !msglist.isEmpty();
 }
 
-bool SLCANInterface::parseMessage(BusMessage &msg)
+
+// ── Statistics ────────────────────────────────────────────────────────────────
+
+bool SLCANInterface::updateStatistics()
 {
-    // Set timestamp to current time
-    msg.setTimestamp_ms(QDateTime::currentMSecsSinceEpoch());
+    return false;
+}
 
-    // Defaults
-    msg.setErrorFrame(0);
-    msg.setInterfaceId(getId());
-    msg.setId(0);
-    msg.setRTR(false);
-    msg.setFD(false);
-    msg.setBRS(false);
-    msg.setRX(true);
+uint32_t SLCANInterface::getState()
+{
+    return _state.load(std::memory_order_relaxed);
+}
 
-    // Convert from ASCII (2nd character to end)
-    for (int i = 1; i < _rx_linbuf_ctr; i++)
-    {
-        // Lowercase letters
-        if(_rx_linbuf[i] >= 'a')
-            _rx_linbuf[i] = _rx_linbuf[i] - 'a' + 10;
-        // Uppercase letters
-        else if(_rx_linbuf[i] >= 'A')
-            _rx_linbuf[i] = _rx_linbuf[i] - 'A' + 10;
-        // Numbers
-        else
-            _rx_linbuf[i] = _rx_linbuf[i] - '0';
-    }
+int SLCANInterface::getNumRxFrames()
+{
+    return static_cast<int>(_rxCount.load(std::memory_order_relaxed));
+}
 
-    bool is_extended = false;
-    bool is_rtr = false;
+int SLCANInterface::getNumRxErrors()
+{
+    return _rxErrors.load(std::memory_order_relaxed);
+}
 
-    // Handle each incoming command
-    switch(_rx_linbuf[0])
-    {
-        // Transmit data frame command
-        case 't':
-        {
-            is_extended = false;
-        }
-        break;
-        case 'T':
-        {
-            is_extended = true;
-        }
-        break;
+int SLCANInterface::getNumRxOverruns()
+{
+    return static_cast<int>(_rxOverruns.load(std::memory_order_relaxed));
+}
 
-        // Transmit remote frame command
-        case 'r':
-        {
-            is_extended = false;
-            is_rtr = true;
-        }
-        break;
-        case 'R':
-        {
-            is_extended = true;
-            is_rtr = true;
-        }
-        break;
+int SLCANInterface::getNumTxFrames()
+{
+    return static_cast<int>(_txCount.load(std::memory_order_relaxed));
+}
 
-        // CANFD transmit - no BRS
-        case 'd':
-        {
-            is_extended = false;
-            msg.setFD(true);
-            msg.setBRS(false);
-        }
-        break;
-        case 'D':
-        {
-            is_extended = true;
-            msg.setFD(true);
-            msg.setBRS(false);
-        }
-        break;
+int SLCANInterface::getNumTxErrors()
+{
+    return _txErrors.load(std::memory_order_relaxed);
+}
 
-        // CANFD transmit - with BRS
-        case 'b':
-        {
-            is_extended = false;
-            msg.setFD(true);
-            msg.setBRS(true);
-        }
-        break;
-        case 'B':
-        {
-            is_extended = true;
-            msg.setFD(true);
-            msg.setBRS(true);
-        }
-        break;
-
-        // Invalid command
-        default:
-        {
-            // Reset buffer
-            _rx_linbuf_ctr = 0;
-            _rx_linbuf[0] = '\0';
-            return false;
-        }
-    }
-
-    // Start parsing at second byte (skip command byte)
-    uint8_t parse_loc = 1;
-
-    // Default to standard id len
-    uint8_t id_len = SLCAN_STD_ID_LEN;
-
-    // Update length if message is extended ID
-    if(is_extended)
-        id_len = SLCAN_EXT_ID_LEN;
-
-    uint32_t id_tmp = 0;
-
-    // Iterate through ID bytes
-    while(parse_loc <= id_len)
-    {
-        id_tmp <<= 4;
-        id_tmp += _rx_linbuf[parse_loc++];
-    }
-
-    msg.setId(id_tmp);
-    msg.setExtended(is_extended);
-    msg.setRTR(is_rtr);
-
-    // Attempt to parse DLC and check sanity
-    uint8_t dlc_code_raw = _rx_linbuf[parse_loc++];
-
-    // If dlc is too long for an FD frame
-    if(msg.isFD() && dlc_code_raw > 0xF)
-    {
-        return false;
-    }
-    if(!msg.isFD() && dlc_code_raw > 0x8)
-    {
-        return false;
-    }
-
-    if(dlc_code_raw > 0x8)
-    {
-        switch(dlc_code_raw)
-        {
-        case 0x9:
-            dlc_code_raw = 12;
-            break;
-        case 0xA:
-            dlc_code_raw = 16;
-            break;
-        case 0xB:
-            dlc_code_raw = 20;
-            break;
-        case 0xC:
-            dlc_code_raw = 24;
-            break;
-        case 0xD:
-            dlc_code_raw = 32;
-            break;
-        case 0xE:
-            dlc_code_raw = 48;
-            break;
-        case 0xF:
-            dlc_code_raw = 64;
-            break;
-        default:
-            dlc_code_raw = 0;
-            perror("Invalid length");
-            break;
-        }
-    }
-
-    msg.setLength(dlc_code_raw);
-
-    // Calculate number of bytes we expect in the message
-    int8_t bytes_in_msg = dlc_code_raw;
-
-    if(bytes_in_msg < 0)
-    {
-        perror("Invalid length < 0");
-        return false;
-    }
-    if(bytes_in_msg > 64)
-    {
-        perror("Invalid length > 64");
-        return false;
-    }
-
-    // Parse data
-    // TODO: Guard against walking off the end of the string!
-    for (uint8_t i = 0; i < bytes_in_msg; i++)
-    {
-        msg.setByte(i,  (_rx_linbuf[parse_loc] << 4) + _rx_linbuf[parse_loc+1]);
-        parse_loc += 2;
-    }
-
-    // Reset buffer
-    _rx_linbuf_ctr = 0;
-    _rx_linbuf[0] = '\0';
-
-    return true;
-
-/*
-    // FIXME
-    if (_ts_mode == ts_mode_SIOCSHWTSTAMP) {
-        // TODO implement me
-        _ts_mode = ts_mode_SIOCGSTAMPNS;
-    }
-
-    if (_ts_mode==ts_mode_SIOCGSTAMPNS) {
-        if (ioctl(_fd, SIOCGSTAMPNS, &ts_rcv) == 0) {
-            msg.setTimestamp(ts_rcv.tv_sec, ts_rcv.tv_nsec/1000);
-        } else {
-            _ts_mode = ts_mode_SIOCGSTAMP;
-        }
-    }
-
-    if (_ts_mode==ts_mode_SIOCGSTAMP) {
-        ioctl(_fd, SIOCGSTAMP, &tv_rcv);
-        msg.setTimestamp(tv_rcv.tv_sec, tv_rcv.tv_usec);
-    }*/
+int SLCANInterface::getNumTxDropped()
+{
+    return static_cast<int>(_txDropped.load(std::memory_order_relaxed));
 }

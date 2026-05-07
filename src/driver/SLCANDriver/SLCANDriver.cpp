@@ -1,4 +1,4 @@
-﻿/*
+/*
 
   Copyright (c) 2022 Ethan Zonca
 
@@ -19,108 +19,78 @@
 
 */
 
-
 #include "SLCANDriver.h"
 #include "SLCANInterface.h"
 #include "core/Backend.h"
 #include "driver/GenericCanSetupPage.h"
 
-#include <unistd.h>
 #include <iostream>
 
-#include <QCoreApplication>
-#include <QDebug>
-#include <QtSerialPort/QSerialPort>
 #include <QtSerialPort/QSerialPortInfo>
 
 SLCANDriver::SLCANDriver(Backend &backend)
-  : CanDriver(backend),
-    setupPage(new GenericCanSetupPage())
+    : CanDriver(backend)
+    , setupPage(new GenericCanSetupPage())
 {
-    QObject::connect(&backend, &Backend::onSetupDialogCreated, setupPage, &GenericCanSetupPage::onSetupDialogCreated);
+    QObject::connect(&backend, &Backend::onSetupDialogCreated,
+                     setupPage, &GenericCanSetupPage::onSetupDialogCreated);
 }
 
-SLCANDriver::~SLCANDriver()
-{
-}
-
-bool SLCANDriver::update()
-{
-    deleteAllInterfaces();
-
-    int interface_cnt = 0;
-
-    for (const auto &info : QSerialPortInfo::availablePorts())
-    {
-        // fprintf(stderr, "Name : %s \r\n",  info.portName().toStdString().c_str());
-        // fprintf(stderr, "   Description : %s \r\n", info.description().toStdString().c_str());
-        // fprintf(stderr, "   Manufacturer: %s \r\n", info.manufacturer().toStdString().c_str());
-
-        if(info.vendorIdentifier() == 0xad50 && info.productIdentifier() == 0x60C4)
-        {
-            std::cout << "   ++ CANable 1.0 or similar ST USB CDC device detected" << std::endl;
-
-            // Create new slcan interface without FD support
-            _manufacturer = SLCANInterface::CANable;
-            createOrUpdateInterface(interface_cnt, info.portName(), false, _manufacturer);
-            interface_cnt++;
-        }
-        else if(info.vendorIdentifier() == 0x0403 && info.productIdentifier() == 0x6015)
-        {
-            std::cout << "   ++ CANable 1.0 or similar ST USB CDC device detected" << std::endl;
-
-            // Create new slcan interface without FD support
-            _manufacturer = SLCANInterface::CANable;
-            createOrUpdateInterface(interface_cnt, info.portName(), false, _manufacturer);
-            interface_cnt++;
-        }
-        else if(info.vendorIdentifier() == 0x16D0 && info.productIdentifier() == 0x117E)
-        {
-            std::cout << "   ++ CANable 2.0 detected" << std::endl;
-
-            _manufacturer = SLCANInterface::CANable;
-            // Create new slcan interface with FD support
-            createOrUpdateInterface(interface_cnt, info.portName(), true, _manufacturer);
-            interface_cnt++;
-        }
-        else if(info.vendorIdentifier() == 1155 && info.productIdentifier() == 22336 && info.serialNumber().startsWith("AAA"))
-        {
-            std::cout << "   ++ WeAct Studio USB2CAN detected" << std::endl;
-            std::cout << "   ++ " << info.serialNumber().toStdString().c_str() << std::endl;
-
-            _manufacturer = SLCANInterface::WeActStudio;
-            // Create new slcan interface with FD support
-            createOrUpdateInterface(interface_cnt, info.portName(), true, _manufacturer);
-            interface_cnt++;
-        }
-        else
-        {
-            //std::cout << "   !! This is not a SLCAN device!" << std::endl;
-        }
-    }
-
-    return true;
-}
+SLCANDriver::~SLCANDriver() = default;
 
 QString SLCANDriver::getName() const
 {
     return "SLCAN";
 }
 
-SLCANInterface *SLCANDriver::createOrUpdateInterface(int index, QString name, bool fd_support, uint32_t manufacturer)
+bool SLCANDriver::update()
+{
+    deleteAllInterfaces();
+
+    using Mfr = SLCANInterface::Manufacturer;
+    int ifaceIdx = 0;
+
+    for (const auto &info : QSerialPortInfo::availablePorts())
+    {
+        const uint16_t vid = info.vendorIdentifier();
+        const uint16_t pid = info.productIdentifier();
+
+        if ((vid == 0xAD50 && pid == 0x60C4) ||
+            (vid == 0x0403 && pid == 0x6015))
+        {
+            std::cout << "   ++ CANable 1.0 detected: " << info.portName().toStdString() << '\n';
+            createOrUpdateInterface(ifaceIdx++, info.portName(), false, Mfr::CANable);
+        }
+        else if (vid == 0x16D0 && pid == 0x117E)
+        {
+            std::cout << "   ++ CANable 2.0 detected: " << info.portName().toStdString() << '\n';
+            createOrUpdateInterface(ifaceIdx++, info.portName(), true, Mfr::CANable);
+        }
+        else if (vid == 1155 && pid == 22336 && info.serialNumber().startsWith("AAA"))
+        {
+            std::cout << "   ++ WeAct Studio USB2CAN detected: "
+                      << info.portName().toStdString() << " (" << info.serialNumber().toStdString() << ")\n";
+            createOrUpdateInterface(ifaceIdx++, info.portName(), true, Mfr::WeActStudio);
+        }
+    }
+
+    return true;
+}
+
+SLCANInterface *SLCANDriver::createOrUpdateInterface(int index, QString name, bool fdSupport,
+                                                     SLCANInterface::Manufacturer manufacturer)
 {
     for (auto *intf : getInterfaces())
     {
-        SLCANInterface *scif = dynamic_cast<SLCANInterface*>(intf);
-        if (scif->getIfIndex() == index)
+        auto *scif = dynamic_cast<SLCANInterface *>(intf);
+        if (scif && scif->getIfIndex() == index)
         {
             scif->setName(name);
             return scif;
         }
     }
 
-    SLCANInterface *scif = new SLCANInterface(this, index, name, fd_support, manufacturer);
+    auto *scif = new SLCANInterface(this, index, std::move(name), fdSupport, manufacturer);
     addInterface(scif);
-
     return scif;
 }
