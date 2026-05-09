@@ -1,6 +1,7 @@
 /*
 
-  Copyright (c) 2015, 2016 Hubert Denkmair
+  Copyright (c) 2022 Ethan Zonca
+  Copyright (c) 2024 CANgaroo Contributors
 
   This file is part of cangaroo.
 
@@ -22,75 +23,41 @@
 #pragma once
 
 #include "../BusInterface.h"
-
-#include <QDateTime>
-#include <QMutex>
-#include <QtSerialPort/QSerialPort>
-#include <atomic>
-
 #include "core/MeasurementInterface.h"
 
-// Maximum rx buffer len
-#define SLCAN_MTU (1 + 8 + 1 + 128 + 1) // canfd 64 frame plus \r plus some padding
-#define SLCAN_STD_ID_LEN 3
-#define SLCAN_EXT_ID_LEN 8
+#include <atomic>
+#include <memory>
 
-#define RXCIRBUF_LEN 8192 // Buffer for received serial data, serviced at 1ms intervals
+#include <QByteArray>
+#include <QList>
+#include <QMutex>
+#include <QString>
+#include <QtSerialPort/QSerialPort>
 
 class SLCANDriver;
 
-struct can_config_t {
-    bool supports_canfd;
-    bool supports_timing;
-    uint32_t state;
-    uint32_t base_freq;
-    uint32_t sample_point;
-    uint32_t ctrl_mode;
-    uint32_t restart_ms;
-};
-
-struct can_status_t {
-    std::atomic<uint32_t> can_state{0};
-
-    std::atomic<uint64_t> rx_count{0};
-    std::atomic<int> rx_errors{0};
-    std::atomic<uint64_t> rx_overruns{0};
-
-    std::atomic<uint64_t> tx_count{0};
-    std::atomic<int> tx_errors{0};
-    std::atomic<uint64_t> tx_dropped{0};
-};
-
-struct can_msg_t {
-    char buf[SLCAN_MTU+1];
-    qint64 length;
-};
-
-class SLCANInterface: public BusInterface {
+class SLCANInterface : public BusInterface
+{
     Q_OBJECT
+
 public:
-    enum {
+    enum class Manufacturer : uint32_t
+    {
         CANable,
         WeActStudio,
     };
-public:
-    SLCANInterface(SLCANDriver *driver, int index, QString name, bool fd_support, uint32_t manufacturer);
+
+    SLCANInterface(SLCANDriver *driver, int index, QString name, bool fdSupport, Manufacturer manufacturer);
     ~SLCANInterface() override;
 
-    QString getDetailsStr() const override;
     QString getName() const override;
     void setName(QString name);
+    QString getDetailsStr() const override;
+    QString getVersion() override;
+    int getIfIndex() const noexcept;
 
     QList<CanTiming> getAvailableBitrates() override;
-
     void applyConfig(const MeasurementInterface &mi) override;
-    virtual bool readConfig();
-    virtual bool readConfigFromLink(struct rtnl_link *link);
-
-    bool supportsTimingConfiguration();
-    bool supportsCanFD();
-    bool supportsTripleSampling();
-
     unsigned getBitrate() override;
     uint32_t getCapabilities() override;
 
@@ -106,56 +73,56 @@ public:
     int getNumRxFrames() override;
     int getNumRxErrors() override;
     int getNumRxOverruns() override;
-
     int getNumTxFrames() override;
     int getNumTxErrors() override;
     int getNumTxDropped() override;
 
-    QString getVersion() override;
-
-    int getIfIndex();
-
 private:
-    enum ts_mode_t {
-        ts_mode_SIOCSHWTSTAMP,
-        ts_mode_SIOCGSTAMPNS,
-        ts_mode_SIOCGSTAMP
+    static constexpr int StdIdLen = 3;
+    static constexpr int ExtIdLen = 8;
+
+    struct TxEntry
+    {
+        QByteArray frame;
+        BusMessage msg;
     };
 
-    uint32_t _manufacturer;
-    QString _version;
+    void writePort(const char *cmd);
+    void writePort(const QByteArray &data);
+    void configureBitrate();
+    void configureFdBitrate();
+    void drainTxQueue(QList<BusMessage> &msglist);
+    void handleTxConfirm(QList<BusMessage> &msglist, bool success);
+    bool parseRxLine(QList<BusMessage> &msglist);
+    [[nodiscard]] static QByteArray encodeFrame(const BusMessage &msg);
 
+    Manufacturer _manufacturer;
     int _idx;
-    std::atomic<bool> _isOpen{false};
-    std::atomic<bool> _isOffline{false};
-    QSerialPort* _serport;
-    QList<can_msg_t> _can_msg_queue;
-    QList<BusMessage> _can_msg_tx_queue;
-    QMutex _serport_mutex;
     QString _name;
-    char _rx_linbuf[SLCAN_MTU+1];
-    int _rx_linbuf_ctr;
-
-    char _rxbuf[RXCIRBUF_LEN];
-    uint32_t _rxbuf_head;
-    uint32_t _rxbuf_tail;
-
-    QMutex _rxbuf_mutex;
+    QString _version;
+    bool _fdSupport{false};
     MeasurementInterface _settings;
 
-    can_config_t _config;
-    can_status_t _status;
-    ts_mode_t _ts_mode;
+    std::unique_ptr<QSerialPort> _port;
+    QByteArray _rxLineBuffer;
 
-    // timestamps stored as ms since epoch to avoid data races on QDateTime
-    std::atomic<qint64> _readMessage_ms{0};
-    std::atomic<uint32_t> _send_wait_respond{0};
-    std::atomic<qint64> _readMessage_run_ms{0};
-    std::atomic<bool> _no_confirm{false};
+    // Frames awaiting device ACK — only accessed from BusListener thread
+    QList<BusMessage> _txPendingConfirm;
 
-    bool updateStatus();
-    bool parseMessage(BusMessage &msg);
+    // TX queue — written by main thread, drained by BusListener thread
+    mutable QMutex _txMutex;
+    QList<TxEntry> _txQueue;
 
-private slots:
-    void handleSerialError(QSerialPort::SerialPortError error);
+    std::atomic<bool> _isOpen{false};
+    std::atomic<bool> _isOffline{false};
+    // True when device does not echo CR/BEL confirmations for TX frames
+    std::atomic<bool> _noConfirm{false};
+
+    std::atomic<uint32_t> _state{state_bus_off};
+    std::atomic<uint64_t> _rxCount{0};
+    std::atomic<int>      _rxErrors{0};
+    std::atomic<uint64_t> _rxOverruns{0};
+    std::atomic<uint64_t> _txCount{0};
+    std::atomic<int>      _txErrors{0};
+    std::atomic<uint64_t> _txDropped{0};
 };

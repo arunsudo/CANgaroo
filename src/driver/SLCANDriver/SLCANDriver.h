@@ -24,12 +24,13 @@
 #include <QString>
 #include "core/Backend.h"
 #include "driver/CanDriver.h"
+#include "SLCANInterface.h"
 
-class SLCANInterface;
 class SetupDialogInterfacePage;
 class GenericCanSetupPage;
 
-class SLCANDriver: public CanDriver {
+class SLCANDriver : public CanDriver
+{
 public:
     SLCANDriver(Backend &backend);
     ~SLCANDriver() override;
@@ -38,7 +39,7 @@ public:
     bool update() override;
 
 private:
-    SLCANInterface *createOrUpdateInterface(int index, QString name, bool fd_support, uint32_t manufacturer);
+    SLCANInterface *createOrUpdateInterface(int index, QString name, bool fdSupport,
+                                            SLCANInterface::Manufacturer manufacturer);
     GenericCanSetupPage *setupPage;
-    uint32_t _manufacturer;
 };
