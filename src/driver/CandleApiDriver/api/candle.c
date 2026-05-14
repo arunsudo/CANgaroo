@@ -76,65 +76,79 @@ static bool candle_read_di(HDEVINFO hdi, SP_DEVICE_INTERFACE_DATA interfaceData,
     return true;
 }
 
+/* Scan one GUID and append found devices to l->dev[] starting at offset.
+ * Returns the number of devices appended, or -1 on a hard error (l->last_error set). */
+static int candle_scan_guid(candle_list_t *l, const wchar_t *guid_str, unsigned offset)
+{
+    GUID guid;
+    if (CLSIDFromString(guid_str, &guid) != NOERROR) {
+        l->last_error = CANDLE_ERR_CLSID;
+        return -1;
+    }
+
+    HDEVINFO hdi = SetupDiGetClassDevs(&guid, NULL, NULL, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
+    if (hdi == INVALID_HANDLE_VALUE) {
+        /* No devices with this GUID present — not a hard error. */
+        return 0;
+    }
+
+    int found = 0;
+    for (unsigned i = 0; (offset + i) < CANDLE_MAX_DEVICES; i++) {
+        SP_DEVICE_INTERFACE_DATA interfaceData;
+        interfaceData.cbSize = sizeof(SP_DEVICE_INTERFACE_DATA);
+
+        if (!SetupDiEnumDeviceInterfaces(hdi, NULL, &guid, i, &interfaceData)) {
+            if (GetLastError() != ERROR_NO_MORE_ITEMS) {
+                l->last_error = CANDLE_ERR_SETUPDI_IF_ENUM;
+                found = -1;
+            }
+            break;
+        }
+
+        if (!candle_read_di(hdi, interfaceData, &l->dev[offset + i])) {
+            l->last_error = l->dev[offset + i].last_error;
+            found = -1;
+            break;
+        }
+        found++;
+    }
+
+    SetupDiDestroyDeviceInfoList(hdi);
+    return found;
+}
+
 bool __stdcall candle_list_scan(candle_list_handle *list)
 {
-    if (list==NULL) {
+    if (list == NULL) {
         return false;
     }
 
     candle_list_t *l = (candle_list_t *)calloc(1, sizeof(candle_list_t));
     *list = l;
-    if (l==NULL) {
+    if (l == NULL) {
         return false;
     }
 
-    GUID guid;
-    if (CLSIDFromString(L"{c15b4308-04d3-11e6-b3ea-6057189e6443}", &guid) != NOERROR) {
-        l->last_error = CANDLE_ERR_CLSID;
-        return false;
-    }
+    /* GUIDs for gs_usb-compatible devices on Windows.
+     * candleLight / CANable / most gs_usb devices: */
+    static const wchar_t *GUIDS[] = {
+        L"{c15b4308-04d3-11e6-b3ea-6057189e6443}",  /* candleLight / CANable / gs_usb standard */
+        L"{B24D8379-235F-4853-95E7-7772516FA2D5}",  /* Cannectivity (electronut-labs) */
+    };
+    static const unsigned NUM_GUIDS = sizeof(GUIDS) / sizeof(GUIDS[0]);
 
-    HDEVINFO hdi = SetupDiGetClassDevs(&guid, NULL, NULL, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
-    if (hdi == INVALID_HANDLE_VALUE) {
-        l->last_error = CANDLE_ERR_GET_DEVICES;
-        return false;
-    }
-
-    bool rv = false;
-    for (unsigned i=0; i<CANDLE_MAX_DEVICES; i++) {
-
-        SP_DEVICE_INTERFACE_DATA interfaceData;
-        interfaceData.cbSize = sizeof(SP_DEVICE_INTERFACE_DATA);
-
-        if (SetupDiEnumDeviceInterfaces(hdi, NULL, &guid, i, &interfaceData)) {
-
-            if (!candle_read_di(hdi, interfaceData, &l->dev[i])) {
-                l->last_error = l->dev[i].last_error;
-                rv = false;
-                break;
-            }
-
-        } else {
-
-            DWORD err = GetLastError();
-            if (err==ERROR_NO_MORE_ITEMS) {
-                l->num_devices = i;
-                l->last_error = CANDLE_ERR_OK;
-                rv = true;
-            } else {
-                l->last_error = CANDLE_ERR_SETUPDI_IF_ENUM;
-                rv = false;
-            }
-            break;
-
+    unsigned total = 0;
+    for (unsigned g = 0; g < NUM_GUIDS; g++) {
+        int n = candle_scan_guid(l, GUIDS[g], total);
+        if (n < 0) {
+            return false;
         }
-
+        total += (unsigned)n;
     }
 
-    SetupDiDestroyDeviceInfoList(hdi);
-
-    return rv;
-
+    l->num_devices = (uint8_t)total;
+    l->last_error  = CANDLE_ERR_OK;
+    return true;
 }
 
 bool __stdcall DLL candle_list_free(candle_list_handle list)
