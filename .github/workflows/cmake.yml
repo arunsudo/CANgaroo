@@ -209,7 +209,7 @@ jobs:
 
   build-windows:
     name: Build CANgaroo (Windows / MinGW / Qt6)
-    runs-on: windows-latest
+    runs-on: windows-2022
 
     env:
       # Kvaser CANlib Windows SDK version — update here when a newer SDK is released.

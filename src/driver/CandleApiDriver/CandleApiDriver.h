@@ -24,12 +24,13 @@
 
 #include "core/Backend.h"
 #include "driver/CanDriver.h"
-#include "api/candle.h"
+#include "CandleSharedDevice.h"
 
+#include <map>
+#include <memory>
 #include <string>
 
 
-class CandleApiInterface;
 class GenericCanSetupPage;
 
 class CandleApiDriver : public CanDriver
@@ -42,8 +43,5 @@ public:
 
 private:
     GenericCanSetupPage *setupPage;
-    CandleApiInterface *findInterface(const std::wstring &path, uint8_t channel);
-
+    std::map<std::wstring, std::shared_ptr<CandleSharedDevice>> _devices;
 };
-
-

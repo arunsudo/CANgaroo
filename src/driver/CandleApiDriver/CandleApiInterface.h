@@ -3,12 +3,14 @@
 
 #include "driver/BusInterface.h"
 #include "core/MeasurementInterface.h"
+#include "CandleSharedDevice.h"
 
 #include <QList>
 #include <QMutex>
 
 #include <windows.h>
 
+#include <memory>
 #include <string>
 
 #include "CandleApiTiming.h"
@@ -20,7 +22,9 @@ class CandleApiInterface : public BusInterface
 {
     Q_OBJECT
 public:
-    CandleApiInterface(CandleApiDriver *driver, candle_handle handle, uint8_t channel);
+    CandleApiInterface(CandleApiDriver *driver,
+                       std::shared_ptr<CandleSharedDevice> sharedDev,
+                       uint8_t channel);
     ~CandleApiInterface() override;
 
     QString getName() const override;
@@ -53,7 +57,6 @@ public:
     std::wstring getPath() const;
     uint8_t getChannel() const;
 
-    bool matches(candle_handle dev, uint8_t channel) const;
 private:
 
     uint64_t _hostOffsetStart;
@@ -62,7 +65,7 @@ private:
     bool _isOpen;
     bool _isFdEnabled;
 
-    candle_handle _handle;
+    std::shared_ptr<CandleSharedDevice> _sharedDev;
     MeasurementInterface _settings;
     Backend &_backend;
 
@@ -81,4 +84,3 @@ private:
 };
 
 #endif // CANDLEAPIINTERFACE_H
-
