@@ -457,8 +457,11 @@ void CandleApiInterface::open()
     // that inter-channel timestamps are directly comparable.
     _hostOffsetStart = _sharedDev->hostOffsetStart;
     _deviceTicksStart = _sharedDev->deviceTicksStart;
-    _prevDeviceTs = _sharedDev->deviceTicksStart;
-    _deviceTsHigh = 0;
+    // Initialise to 0 (sentinel "no frame seen yet") so the first received
+    // frame — which may be a pre-epoch USB-buffered frame slightly before
+    // _deviceTicksStart — does not trigger a false wrap into _deviceTsHigh.
+    _prevDeviceTs = 0;
+    _deviceTsHigh.store(0, std::memory_order_relaxed);
 
     if (firstOpen) {
         _sharedDev->startReader();
@@ -549,9 +552,15 @@ void CandleApiInterface::sendMessage(const BusMessage &msg)
         BusMessage txMsg = msg;
         txMsg.setRX(false);
         uint32_t t_dev = 0;
-        candle_dev_get_timestamp_us(_sharedDev->handle, &t_dev);
-        uint32_t dev_ts = t_dev - _deviceTicksStart;
-        uint64_t ts_us = _hostOffsetStart + dev_ts;
+        const bool ts_ok = candle_dev_get_timestamp_us(_sharedDev->handle, &t_dev);
+        const uint64_t high = _deviceTsHigh.load(std::memory_order_acquire);
+        uint64_t ts_us;
+        if (ts_ok && t_dev >= _deviceTicksStart) {
+            ts_us = _hostOffsetStart + high + (t_dev - _deviceTicksStart);
+        } else {
+            // Device timestamp unavailable or before epoch — use current high-water mark.
+            ts_us = _hostOffsetStart + high;
+        }
         txMsg.setTimestamp_us(static_cast<int64_t>(ts_us));
         QMutexLocker lock(&_txMutex);
         _txMsgList.append(txMsg);
@@ -599,12 +608,18 @@ bool CandleApiInterface::readMessage(QList<BusMessage> &msglist, unsigned int ti
     }
 
     uint32_t raw_ts = candle_fd_frame_timestamp_us(&frame);
-    if (raw_ts < _prevDeviceTs) {
-        _deviceTsHigh += (1ULL << 32);
+    // Skip the wrap check on the very first frame (_prevDeviceTs == 0).
+    // Pre-epoch USB-buffered frames (raw_ts < _deviceTicksStart) must not
+    // trigger a false wrap that would add ~71 minutes to every timestamp.
+    if (_prevDeviceTs != 0 && raw_ts < _prevDeviceTs) {
+        _deviceTsHigh.fetch_add(1ULL << 32, std::memory_order_relaxed);
     }
     _prevDeviceTs = raw_ts;
-    uint32_t dev_ts = raw_ts - _deviceTicksStart;
-    uint64_t ts_us = _hostOffsetStart + _deviceTsHigh + dev_ts;
+    const uint64_t high = _deviceTsHigh.load(std::memory_order_relaxed);
+    const uint64_t abs_ts = static_cast<uint64_t>(raw_ts) + high;
+    // Clamp pre-epoch frames to measurement start rather than wrapping negative.
+    const uint64_t ts_us = _hostOffsetStart +
+                           (abs_ts >= _deviceTicksStart ? abs_ts - _deviceTicksStart : 0ULL);
 
     msg.setTimestamp_us(static_cast<int64_t>(ts_us));
     msglist.append(msg);

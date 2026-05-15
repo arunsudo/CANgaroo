@@ -24,21 +24,49 @@
 
 #include "CandleApiInterface.h"
 #include "driver/GenericCanSetupPage.h"
+#include "core/Log.h"
+
+#include <algorithm>
+#include <cwctype>
 
 // Composite USB devices expose each CAN interface as a separate Windows device
-// path containing "&MI_XX" (e.g. "&MI_00", "&MI_02"). Strip that segment so
+// path containing "&mi_XX" (e.g. "&mi_00", "&mi_02"). Strip that segment so
 // we can recognise multiple interface paths as the same physical device.
+// Windows returns device paths in lowercase, so compare case-insensitively.
 static std::wstring baseDevicePath(const std::wstring &path)
 {
+    // Normalise to lowercase so the map key is consistent regardless of capitalisation.
     std::wstring result = path;
-    const std::wstring mi_tag = L"&MI_";
-    const auto pos = result.find(mi_tag);
-    if (pos != std::wstring::npos) {
-        const auto next = result.find(L'#', pos);
-        if (next != std::wstring::npos) {
-            result.erase(pos, next - pos);
-        }
+    std::transform(result.begin(), result.end(), result.begin(), ::towlower);
+
+    // Pass 1: strip every &mi_NNNN segment.
+    // On serial-number-based composite USB devices &mi_XX appears in BOTH the
+    // hardware-ID part AND the instance-ID part of the path, so a single erase
+    // is not enough.  Loop until all occurrences are gone.
+    const std::wstring mi_tag = L"&mi_";
+    auto pos = result.find(mi_tag);
+    while (pos != std::wstring::npos) {
+        auto end = pos + mi_tag.size();
+        while (end < result.size() && iswxdigit(result[end]))
+            ++end;
+        result.erase(pos, end - pos);
+        pos = result.find(mi_tag, pos);
     }
+
+    // Pass 2: for location-based instance IDs (no USB serial number) the
+    // interface number is the last segment before #{GUID}, encoded as exactly
+    // 4 hex digits (e.g. &0000 for MI_00, &0002 for MI_02).  Strip it so all
+    // interfaces of the same physical device share the same key.
+    const auto guid_pos = result.rfind(L"#{");
+    if (guid_pos >= 5 && result[guid_pos - 5] == L'&') {
+        bool all_hex = true;
+        for (std::size_t k = guid_pos - 4; k < guid_pos; ++k) {
+            if (!iswxdigit(result[k])) { all_hex = false; break; }
+        }
+        if (all_hex)
+            result.erase(guid_pos - 5, 5);
+    }
+
     return result;
 }
 
@@ -48,6 +76,10 @@ CandleApiDriver::CandleApiDriver(Backend &backend)
     setupPage(new GenericCanSetupPage(0))
 {
     QObject::connect(&backend, &Backend::onSetupDialogCreated, setupPage, &GenericCanSetupPage::onSetupDialogCreated);
+
+    candle_log_fn = [](const wchar_t *msg) {
+        log_debug(QString::fromWCharArray(msg));
+    };
 }
 
 QString CandleApiDriver::getName() const
@@ -77,17 +109,23 @@ bool CandleApiDriver::update()
     for (uint8_t i = 0; i < num_devices; i++) {
         candle_handle dev;
         if (!candle_dev_get(clist, i, &dev)) {
+            log_debug(QString("CandleAPI: candle_dev_get failed for index %1").arg(i));
             continue;
         }
 
+        const QString devPathStr = QString::fromWCharArray(candle_dev_get_path(dev));
+        log_debug(QString("CandleAPI: found device[%1]: %2").arg(i).arg(devPathStr));
+
         // Open temporarily to read channel count and per-channel capabilities.
         if (!candle_dev_open(dev)) {
+            log_debug(QString("CandleAPI: candle_dev_open failed for %1 (err=%2)").arg(devPathStr).arg(candle_dev_last_error(dev)));
             candle_dev_free(dev);
             continue;
         }
 
         uint8_t num_channels = 0;
         if (!candle_channel_count(dev, &num_channels) || num_channels == 0) {
+            log_debug(QString("CandleAPI: channel_count=0 for %1, skipping").arg(devPathStr));
             candle_dev_close(dev);
             candle_dev_free(dev);
             continue;
@@ -101,6 +139,7 @@ bool CandleApiDriver::update()
         // (MI_00, MI_02, …) but they all share the same USB endpoint and
         // the firmware reports the total icount from any interface.
         if (_devices.count(baseKey)) {
+            log_debug(QString("CandleAPI: duplicate interface skipped: %1").arg(devPathStr));
             candle_dev_close(dev);
             candle_dev_free(dev);
             continue;
@@ -127,6 +166,8 @@ bool CandleApiDriver::update()
         auto sharedDev = std::make_shared<CandleSharedDevice>();
         sharedDev->handle = shared_handle;
         _devices[baseKey] = sharedDev;
+
+        log_debug(QString("CandleAPI: registered device %1 with %2 channel(s)").arg(devPathStr).arg(num_channels));
 
         // One BusInterface per channel, all sharing the same physical device.
         for (uint8_t ch = 0; ch < num_channels; ch++) {

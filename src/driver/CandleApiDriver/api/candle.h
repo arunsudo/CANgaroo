@@ -191,6 +191,11 @@ static inline uint8_t candle_len_to_dlc(uint8_t len)
 
 #define DLL
 
+/* Optional log callback — set once at startup to receive diagnostic messages.
+ * If NULL (the default) no logging is performed. */
+typedef void (*candle_log_fn_t)(const wchar_t *msg);
+extern candle_log_fn_t candle_log_fn;
+
 bool __stdcall DLL candle_list_scan(candle_list_handle *list);
 bool __stdcall DLL candle_list_free(candle_list_handle list);
 bool __stdcall DLL candle_list_length(candle_list_handle list, uint8_t *len);

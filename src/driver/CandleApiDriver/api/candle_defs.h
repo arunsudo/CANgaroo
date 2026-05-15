@@ -76,6 +76,7 @@ typedef struct {
     UCHAR interfaceNumber;
     UCHAR bulkInPipe;
     UCHAR bulkOutPipe;
+    HANDLE txEvent;     /* pre-allocated event for timed overlapped writes */
 
     candle_device_config_t dconf;
     candle_capability_t bt_const;
