@@ -11,7 +11,7 @@
 | **Kvaser** | ✅ | ✅ | USB/CAN Leaf and other Kvaser devices via CANlib SDK (`CONFIG+=kvaser`) |
 | **Vector** | — | ✅ | VN-series and other Vector devices via Qt serialbus (XL Driver Library required at runtime), CAN FD supported |
 | **TinyCAN** | ✅ | ✅ | TinyCAN USB adapters via Qt serialbus (enable in Measurement > Driver menu) |
-| **Candlelight / CANable** | ✅ | ✅ | CANable (Candlelight firmware), MKS CANable, cantact, … CAN FD supported |
+| **Candlelight / CANable / CANnectivity** | ✅ | ✅ | CANable (Candlelight firmware), MKS CANable, cantact, CANnectivity, and other gs_usb devices. Multi-channel devices supported. CAN FD supported. |
 | **SLCAN** | ✅ | ✅ | CANable (SLCAN firmware), Arduino CAN shields |
 | **CANblaster** | ✅ | ✅ | UDP-based remote CAN via [CANblaster](https://github.com/OpenAutoDiagLabs/CANblaster) |
 | **GrIP** | ✅ | ✅ | GrIP protocol |
