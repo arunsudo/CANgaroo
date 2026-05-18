@@ -93,16 +93,10 @@ static QString productNameFromPath(const std::wstring &path)
     return QStringLiteral("candle");
 }
 
-static void candleApiLogCallback(const wchar_t *msg)
-{
-    log_debug(QStringLiteral("CandleAPI: ") + QString::fromWCharArray(msg));
-}
-
 CandleApiDriver::CandleApiDriver(Backend &backend)
   : CanDriver(backend),
     setupPage(new GenericCanSetupPage(0))
 {
-    candle_log_fn = candleApiLogCallback;
     QObject::connect(&backend, &Backend::onSetupDialogCreated, setupPage, &GenericCanSetupPage::onSetupDialogCreated);
 }
 
@@ -121,7 +115,6 @@ bool CandleApiDriver::update()
 
     candle_list_handle clist;
     if (!candle_list_scan(&clist)) {
-        log_debug(QStringLiteral("CandleAPI: scan failed"));
         return true;
     }
 
@@ -130,18 +123,17 @@ bool CandleApiDriver::update()
         candle_list_free(clist);
         return true;
     }
-    log_debug(QStringLiteral("CandleAPI: scan found %1 device path(s)").arg(static_cast<int>(num_devices)));
 
     for (uint8_t i = 0; i < num_devices; i++) {
         candle_handle dev;
         if (!candle_dev_get(clist, i, &dev)) {
-            log_debug(QStringLiteral("CandleAPI: candle_dev_get failed for index %1").arg(static_cast<int>(i)));
+            log_error(QStringLiteral("CandleAPI: candle_dev_get failed for index %1").arg(static_cast<int>(i)));
             continue;
         }
 
         // Open temporarily to read channel count and per-channel capabilities.
         if (!candle_dev_open(dev)) {
-            log_debug(QStringLiteral("CandleAPI: discovery open failed for index %1").arg(static_cast<int>(i)));
+            log_error(QStringLiteral("CandleAPI: discovery open failed for index %1").arg(static_cast<int>(i)));
             candle_dev_free(dev);
             continue;
         }
@@ -155,18 +147,12 @@ bool CandleApiDriver::update()
 
         const std::wstring devPath(candle_dev_get_path(dev));
         const std::wstring baseKey = baseDevicePath(devPath);
-        log_debug(QStringLiteral("CandleAPI: discovery path=%1 channels=%2 baseKey=%3")
-            .arg(QString::fromStdWString(devPath))
-            .arg(static_cast<int>(num_channels))
-            .arg(QString::fromStdWString(baseKey)));
 
         // Skip additional USB interfaces of a device we already processed.
         // On composite devices each CAN channel has its own interface path
         // (MI_00, MI_02, …) but they all share the same USB endpoint and
         // the firmware reports the total icount from any interface.
         if (_devices.count(baseKey)) {
-            log_debug(QStringLiteral("CandleAPI: skipping duplicate interface path=%1")
-                .arg(QString::fromStdWString(devPath)));
             candle_dev_close(dev);
             candle_dev_free(dev);
             continue;

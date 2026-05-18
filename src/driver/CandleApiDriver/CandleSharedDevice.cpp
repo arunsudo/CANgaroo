@@ -38,7 +38,6 @@ CandleSharedDevice::~CandleSharedDevice()
 void CandleSharedDevice::startReader()
 {
     readerRunning.store(true, std::memory_order_relaxed);
-    log_debug(QStringLiteral("CandleAPI: shared reader starting for %1").arg(productName));
     readerThread = std::thread([this]()
     {
         while (readerRunning.load(std::memory_order_relaxed)) {
@@ -50,28 +49,7 @@ void CandleSharedDevice::startReader()
             const candle_frametype_t frameType = candle_fd_frame_type(&frame);
             if (frameType != CANDLE_FRAMETYPE_RECEIVE
                     && frameType != CANDLE_FRAMETYPE_ERROR) {
-                log_debug(QStringLiteral("CandleAPI: shared reader ignored frame type=%1 echo=0x%2 can_id=0x%3 ch=%4 flags=0x%5 dlc=%6")
-                    .arg(static_cast<int>(frameType))
-                    .arg(frame.echo_id, 8, 16, QLatin1Char('0'))
-                    .arg(frame.can_id, 8, 16, QLatin1Char('0'))
-                    .arg(static_cast<int>(frame.channel))
-                    .arg(static_cast<int>(frame.flags), 2, 16, QLatin1Char('0'))
-                    .arg(static_cast<int>(frame.can_dlc)));
                 continue;
-            }
-            if (frameType == CANDLE_FRAMETYPE_ERROR) {
-                QString data;
-                for (int i = 0; i < 8; i++) {
-                    if (!data.isEmpty()) {
-                        data += QLatin1Char(' ');
-                    }
-                    data += QStringLiteral("%1").arg(frame.data[i], 2, 16, QLatin1Char('0'));
-                }
-                log_debug(QStringLiteral("CandleAPI: shared reader queued error frame can_id=0x%1 ch=%2 dlc=%3 data=%4")
-                    .arg(frame.can_id, 8, 16, QLatin1Char('0'))
-                    .arg(static_cast<int>(frame.channel))
-                    .arg(static_cast<int>(frame.can_dlc))
-                    .arg(data));
             }
             const uint8_t ch = frame.channel;
             if (ch < MAX_CHANNELS) {
@@ -84,9 +62,7 @@ void CandleSharedDevice::startReader()
                 rxQueues[ch].append(queuedFrame);
                 queueCond.wakeAll();
             } else {
-                log_debug(QStringLiteral("CandleAPI: shared reader dropped frame for invalid channel=%1 flags=0x%2")
-                    .arg(static_cast<int>(ch))
-                    .arg(static_cast<int>(frame.flags), 2, 16, QLatin1Char('0')));
+                log_error(QStringLiteral("CandleAPI: received frame for invalid channel %1").arg(static_cast<int>(ch)));
             }
         }
     });
@@ -98,7 +74,6 @@ void CandleSharedDevice::stopReader()
     if (readerThread.joinable()) {
         readerThread.join();
     }
-    log_debug(QStringLiteral("CandleAPI: shared reader stopped for %1").arg(productName));
     QMutexLocker lock(&queueMutex);
     for (auto &q : rxQueues) {
         q.clear();

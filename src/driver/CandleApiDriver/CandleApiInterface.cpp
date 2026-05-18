@@ -292,7 +292,7 @@ QList<CanTiming> CandleApiInterface::getAvailableBitrates()
 
     candle_capability_t caps;
     if (!candle_channel_get_capabilities(_sharedDev->handle, _channel, &caps)) {
-        log_info(tr("CandleApi::getAvailableBitrates() failed!"));
+        log_error(tr("CandleApi: getAvailableBitrates() failed"));
         return retval;
     }
 
@@ -333,9 +333,6 @@ bool CandleApiInterface::setBitTiming(uint32_t bitrate, uint32_t samplePoint)
         return false;
     }
 
-    log_debug(tr("CandleApi::setBitTiming(): looking for bitrate=%1, samplePoint=%2, fclk_can=%3")
-        .arg(bitrate).arg(samplePoint).arg(caps.fclk_can));
-
     for (const auto &t : _timings) {
         if ( (t.getBaseClk() == caps.fclk_can)
           && (t.getBitrate()==bitrate)
@@ -344,14 +341,13 @@ bool CandleApiInterface::setBitTiming(uint32_t bitrate, uint32_t samplePoint)
             candle_bittiming_t timing = t.getTiming();
             bool ok = candle_channel_set_timing(_sharedDev->handle, _channel, &timing);
             if (!ok) {
-                log_info(tr("CandleApi::setBitTiming(): candle_channel_set_timing() failed!"));
+                log_error(tr("CandleApi: set bittiming failed"));
             }
             return ok;
         }
     }
 
-    // no valid timing found
-    log_info(tr("CandleApi::setBitTiming(): no matching timing entry found for bitrate=%1, samplePoint=%2, fclk_can=%3")
+    log_error(tr("CandleApi: no timing entry for bitrate=%1 samplePoint=%2 fclk=%3")
         .arg(bitrate).arg(samplePoint).arg(caps.fclk_can));
     return false;
 }
@@ -360,12 +356,9 @@ bool CandleApiInterface::setDataBitTiming(uint32_t bitrate, uint32_t samplePoint
 {
     candle_capability_t caps;
     if (!candle_channel_get_capabilities(_sharedDev->handle, _channel, &caps)) {
-        log_info(tr("CandleApi::setDataBitTiming(): Could not get capabilities!"));
+        log_error(tr("CandleApi: get capabilities failed"));
         return false;
     }
-
-    log_debug(tr("CandleApi::setDataBitTiming(): looking for bitrate=%1, samplePoint=%2, fclk_can=%3")
-        .arg(bitrate).arg(samplePoint).arg(caps.fclk_can));
 
     for (const auto &t : _fdTimings) {
         if ( (t.getBaseClk() == caps.fclk_can)
@@ -375,13 +368,13 @@ bool CandleApiInterface::setDataBitTiming(uint32_t bitrate, uint32_t samplePoint
             candle_bittiming_t timing = t.getTiming();
             bool ok = candle_channel_set_data_timing(_sharedDev->handle, _channel, &timing);
             if (!ok) {
-                log_info(tr("CandleApi::setDataBitTiming(): candle_channel_set_data_timing() failed!"));
+                log_error(tr("CandleApi: set data bittiming failed"));
             }
             return ok;
         }
     }
 
-    log_info(tr("CandleApi::setDataBitTiming(): no matching FD timing entry found for bitrate=%1, samplePoint=%2, fclk_can=%3")
+    log_error(tr("CandleApi: no FD timing entry for bitrate=%1 samplePoint=%2 fclk=%3")
         .arg(bitrate).arg(samplePoint).arg(caps.fclk_can));
     return false;
 }
@@ -395,14 +388,14 @@ void CandleApiInterface::open()
 
     if (firstOpen) {
         if (!candle_dev_open(_sharedDev->handle)) {
-            log_info(tr("CandleApi::open() failed!"));
+            log_error(tr("CandleApi: device open failed"));
             _isOpen = false;
             return;
         }
     }
 
     if (!setBitTiming(_settings.bitrate(), _settings.samplePoint())) {
-        log_info(tr("CandleApi::Bitrate failed!"));
+        log_error(tr("CandleApi: set bitrate failed"));
         if (firstOpen) {
             candle_dev_close(_sharedDev->handle);
         }
@@ -426,13 +419,13 @@ void CandleApiInterface::open()
         candle_capability_t caps;
         if (candle_channel_get_capabilities(_sharedDev->handle, _channel, &caps) && (caps.feature & CANDLE_FEATURE_FD)) {
             if (!setDataBitTiming(_settings.fdBitrate(), _settings.fdSamplePoint())) {
-                log_info(tr("CandleApi::open(): FD data bittiming failed, falling back to classic CAN"));
+                log_warning(tr("CandleApi: FD data bittiming failed, falling back to classic CAN"));
             } else {
                 flags |= CANDLE_MODE_FD;
                 _isFdEnabled = true;
             }
         } else {
-            log_info(tr("CandleApi::open(): CAN FD requested but device does not support it"));
+            log_warning(tr("CandleApi: CAN FD requested but device does not support it"));
         }
     }
 
@@ -440,13 +433,8 @@ void CandleApiInterface::open()
     _numTx = 0;
     _numTxErr = 0;
 
-    log_debug(tr("CandleApi::open(): starting channel=%1 flags=0x%2 firstOpen=%3")
-        .arg(_channel)
-        .arg(flags, 8, 16, QLatin1Char('0'))
-        .arg(firstOpen ? 1 : 0));
-
     if (!candle_channel_start(_sharedDev->handle, _channel, flags)) {
-        log_info(tr("CandleApi::open(): channel start failed for channel=%1, last_error=%2")
+        log_error(tr("CandleApi: channel %1 start failed (error %2)")
             .arg(_channel)
             .arg(candle_dev_last_error(_sharedDev->handle)));
         if (firstOpen) {
@@ -465,7 +453,7 @@ void CandleApiInterface::open()
             _sharedDev->resetTimestampEpoch(hostNowUs, t_dev, true);
         } else {
             _sharedDev->resetTimestampEpoch(hostNowUs, 0, false);
-            log_info(tr("CandleApi::open(): device timestamp unavailable, using host timestamps"));
+            log_warning(tr("CandleApi: device timestamp unavailable, using host clock"));
         }
     }
 
