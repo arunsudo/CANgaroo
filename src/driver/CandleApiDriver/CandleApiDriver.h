@@ -1,6 +1,7 @@
 /*
 
   Copyright (c) 2016 Hubert Denkmair <hubert@denkmair.de>
+  Copyright (c) 2026 Schildkroet
 
   This file is part of cangaroo.
 
@@ -23,9 +24,13 @@
 
 #include "core/Backend.h"
 #include "driver/CanDriver.h"
-#include "api/candle.h"
+#include "CandleSharedDevice.h"
 
-class CandleApiInterface;
+#include <map>
+#include <memory>
+#include <string>
+
+
 class GenericCanSetupPage;
 
 class CandleApiDriver : public CanDriver
@@ -38,7 +43,5 @@ public:
 
 private:
     GenericCanSetupPage *setupPage;
-    CandleApiInterface *findInterface(candle_handle dev);
-
+    std::map<std::wstring, std::shared_ptr<CandleSharedDevice>> _devices;
 };
-

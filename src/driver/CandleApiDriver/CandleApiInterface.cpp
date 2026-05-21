@@ -20,17 +20,19 @@
 #include "CandleApiInterface.h"
 #include "CandleApiDriver.h"
 
-#include <chrono>
-
+#include <QDateTime>
 #include <QMutexLocker>
 
-CandleApiInterface::CandleApiInterface(CandleApiDriver *driver, candle_handle handle)
+#include <algorithm>
+
+CandleApiInterface::CandleApiInterface(CandleApiDriver *driver,
+                                       std::shared_ptr<CandleSharedDevice> sharedDev,
+                                       uint8_t channel)
   : BusInterface(reinterpret_cast<CanDriver*>(driver)),
-    _hostOffsetStart(0),
-    _deviceTicksStart(0),
+    _channel(channel),
     _isOpen(false),
     _isFdEnabled(false),
-    _handle(handle),
+    _sharedDev(std::move(sharedDev)),
     _backend(driver->backend()),
     _numRx(0),
     _numTx(0),
@@ -68,6 +70,24 @@ CandleApiInterface::CandleApiInterface(CandleApiDriver *driver, candle_handle ha
         << CandleApiTiming(160000000,  500000, 875,  2, 138, 20)
         << CandleApiTiming(160000000, 1000000, 875,  1, 138, 20);
 
+    _timings
+        // Timings for 80MHz (CANnectivity)
+        // Formula: bitrate = 80MHz / (brp * (1 + prop_seg + phase_seg1 + phase_seg2))
+        //          prop_seg = 1 (fixed); SP = (1 + prop_seg + phase_seg1) / total_TQ
+        << CandleApiTiming(80000000,   10000, 870, 80,  85, 13)  // 80M/(80*100)  = 10k,  SP=87.0%
+        << CandleApiTiming(80000000,   20000, 870, 40,  85, 13)  // 80M/(40*100)  = 20k,  SP=87.0%
+        << CandleApiTiming(80000000,   50000, 870, 16,  85, 13)  // 80M/(16*100)  = 50k,  SP=87.0%
+        << CandleApiTiming(80000000,  100000, 870,  8,  85, 13)  // 80M/(8*100)   = 100k, SP=87.0%
+        << CandleApiTiming(80000000,  125000, 875,  5, 110, 16)  // 80M/(5*128)   = 125k, SP=87.5%
+        << CandleApiTiming(80000000,  250000, 875,  2, 138, 20)  // 80M/(2*160)   = 250k, SP=87.5%
+        << CandleApiTiming(80000000,  500000, 875,  1, 138, 20)  // 80M/(1*160)   = 500k, SP=87.5%
+        << CandleApiTiming(80000000,  800000, 870,  1,  85, 13)  // 80M/(1*100)   = 800k, SP=87.0%
+        << CandleApiTiming(80000000, 1000000, 875,  1,  68, 10)  // 80M/(1*80)    = 1M,   SP=87.5%
+        << CandleApiTiming(80000000, 2000000, 875,  1,  33,  5)  // 80M/(1*40)    = 2M,   SP=87.5%
+        << CandleApiTiming(80000000, 4000000, 850,  1,  15,  3)  // 80M/(1*20)    = 4M,   SP=85.0%
+        << CandleApiTiming(80000000, 5000000, 875,  1,  12,  2)  // 80M/(1*16)    = 5M,   SP=87.5%
+        << CandleApiTiming(80000000, 8000000, 800,  1,   6,  2); // 80M/(1*10)    = 8M,   SP=80.0%
+
     // Timings for 48MHz processors (CANable 0.X)
     _timings
         // sample point: 50.0%
@@ -79,7 +99,7 @@ CandleApiInterface::CandleApiInterface(CandleApiDriver *driver, candle_handle ha
         << CandleApiTiming(48000000,  125000, 500,  24, 6, 8)
         << CandleApiTiming(48000000,  250000, 500,  12, 6, 8)
         << CandleApiTiming(48000000,  500000, 500,   6, 6, 8)
-        << CandleApiTiming(48000000,  800000, 500,   3, 8, 9)
+        << CandleApiTiming(48000000,  800000, 500,   3, 8, 10)
         << CandleApiTiming(48000000, 1000000, 500,   3, 6, 8)
 
         // sample point: 62.5%
@@ -133,7 +153,7 @@ CandleApiInterface::CandleApiInterface(CandleApiDriver *driver, candle_handle ha
         << CandleApiTiming(16000000, 1000000, 500,  1,  6,  8)
 
         // sample point: 62.5%
-        << CandleApiTiming(16000000,   10000, 625, 64, 14,  9)
+        << CandleApiTiming(16000000,   10000, 625, 100, 8,  6)
         << CandleApiTiming(16000000,   20000, 625, 50,  8,  6)
         << CandleApiTiming(16000000,   50000, 625, 20,  8,  6)
         << CandleApiTiming(16000000,   83333, 625, 12,  8,  6)
@@ -141,7 +161,7 @@ CandleApiInterface::CandleApiInterface(CandleApiDriver *driver, candle_handle ha
         << CandleApiTiming(16000000,  125000, 625,  8,  8,  6)
         << CandleApiTiming(16000000,  250000, 625,  4,  8,  6)
         << CandleApiTiming(16000000,  500000, 625,  2,  8,  6)
-        << CandleApiTiming(16000000,  800000, 625,  1, 11,  7)
+        << CandleApiTiming(16000000,  800000, 650,  1, 11,  7)
         << CandleApiTiming(16000000, 1000000, 625,  1,  8,  6)
 
         // sample point: 75.0%
@@ -163,7 +183,7 @@ CandleApiInterface::CandleApiInterface(CandleApiDriver *driver, candle_handle ha
         << CandleApiTiming(16000000,  125000, 875,  8, 12,  2)
         << CandleApiTiming(16000000,  250000, 875,  4, 12,  2)
         << CandleApiTiming(16000000,  500000, 875,  2, 12,  2)
-        << CandleApiTiming(16000000,  800000, 900,  2,  7,  1)
+        << CandleApiTiming(16000000,  800000, 900,  1, 16,  2)
         << CandleApiTiming(16000000, 1000000, 875,  1, 12,  2);
 
     // CAN FD data-phase timings
@@ -171,26 +191,38 @@ CandleApiInterface::CandleApiInterface(CandleApiDriver *driver, candle_handle ha
     //   bitrate = fclk / (brp * (1_sync + 1_prop + phase_seg1 + phase_seg2))
     //   SP      = (1_sync + 1_prop + phase_seg1) / total_tq  (as per-mille × 1000)
 
+    // CAN FD data-phase hardware constraint: tseg1 (=prop_seg+phase_seg1) ≤ 31, tseg2 ≤ 16, brp ≤ 32.
+    // Low bitrates require a higher brp to keep tseg1 within that limit.
+
     // 170 MHz (CANable 2.0 — STM32G0B1)
     _fdTimings
-        << CandleApiTiming(170000000,  1000000, 800, 2, 66, 17)  //  170M/(2*85)  = 1M,  SP=80.0%
-        << CandleApiTiming(170000000,  2000000, 800, 1, 66, 17)  //  170M/(1*85)  = 2M,  SP=80.0%
-        << CandleApiTiming(170000000,  5000000, 794, 1, 25,  7)  //  170M/(1*34)  = 5M,  SP=79.4%
-        << CandleApiTiming(170000000, 10000000, 706, 1, 10,  5); //  170M/(1*17)  = 10M, SP=70.6%
+        << CandleApiTiming(170000000,  1000000, 794,  5, 25,  7)  //  170M/(5*34)  = 1M,  SP=79.4%
+        << CandleApiTiming(170000000,  2000000, 824,  5, 12,  3)  //  170M/(5*17)  = 2M,  SP=82.4%
+        << CandleApiTiming(170000000,  5000000, 794,  1, 25,  7)  //  170M/(1*34)  = 5M,  SP=79.4%
+        << CandleApiTiming(170000000, 10000000, 706,  1, 10,  5); //  170M/(1*17)  = 10M, SP=70.6%
 
     // 160 MHz (CANable 2.5 — STM32G4)
     _fdTimings
-        << CandleApiTiming(160000000,  1000000, 800, 2, 62, 16)  //  160M/(2*80)  = 1M,  SP=80.0%
-        << CandleApiTiming(160000000,  2000000, 800, 1, 62, 16)  //  160M/(1*80)  = 2M,  SP=80.0%
-        << CandleApiTiming(160000000,  4000000, 800, 1, 30,  8)  //  160M/(1*40)  = 4M,  SP=80.0%
-        << CandleApiTiming(160000000,  8000000, 800, 1, 14,  4); //  160M/(1*20)  = 8M,  SP=80.0%
+        << CandleApiTiming(160000000,  1000000, 800,  4, 30,  8)  //  160M/(4*40)  = 1M,  SP=80.0%
+        << CandleApiTiming(160000000,  2000000, 800,  2, 30,  8)  //  160M/(2*40)  = 2M,  SP=80.0%
+        << CandleApiTiming(160000000,  4000000, 800,  1, 30,  8)  //  160M/(1*40)  = 4M,  SP=80.0%
+        << CandleApiTiming(160000000,  5000000, 812,  1, 24,  6)  //  160M/(1*32)  = 5M,  SP=81.25%
+        << CandleApiTiming(160000000,  8000000, 800,  1, 14,  4); //  160M/(1*20)  = 8M,  SP=80.0%
+
+    // 80 MHz (CANnectivity)
+    _fdTimings
+        << CandleApiTiming(80000000,   1000000, 800,  2, 30,  8)  //  80M/(2*40)   = 1M,  SP=80.0%
+        << CandleApiTiming(80000000,   2000000, 800,  1, 30,  8)  //  80M/(1*40)   = 2M,  SP=80.0%
+        << CandleApiTiming(80000000,   4000000, 800,  1, 14,  4)  //  80M/(1*20)   = 4M,  SP=80.0%
+        << CandleApiTiming(80000000,   5000000, 812,  1, 11,  3)  //  80M/(1*16)   = 5M,  SP=81.25%
+        << CandleApiTiming(80000000,   8000000, 800,  1,  6,  2); //  80M/(1*10)   = 8M,  SP=80.0%
 
     // 48 MHz (CANable 0.x — STM32F072)
     _fdTimings
-        << CandleApiTiming(48000000,   1000000, 792, 1, 36, 10)  //  48M/(1*48)   = 1M,  SP=79.2%
-        << CandleApiTiming(48000000,   2000000, 792, 1, 17,  5)  //  48M/(1*24)   = 2M,  SP=79.2%
-        << CandleApiTiming(48000000,   3000000, 813, 1, 11,  3)  //  48M/(1*16)   = 3M,  SP=81.3%
-        << CandleApiTiming(48000000,   4000000, 833, 1,  8,  2); //  48M/(1*12)   = 4M,  SP=83.3%
+        << CandleApiTiming(48000000,   1000000, 792,  2, 17,  5)  //  48M/(2*24)   = 1M,  SP=79.2%
+        << CandleApiTiming(48000000,   2000000, 792,  1, 17,  5)  //  48M/(1*24)   = 2M,  SP=79.2%
+        << CandleApiTiming(48000000,   3000000, 813,  1, 11,  3)  //  48M/(1*16)   = 3M,  SP=81.3%
+        << CandleApiTiming(48000000,   4000000, 833,  1,  8,  2); //  48M/(1*12)   = 4M,  SP=83.3%
 
     // 16 MHz
     _fdTimings
@@ -200,17 +232,22 @@ CandleApiInterface::CandleApiInterface(CandleApiDriver *driver, candle_handle ha
 
 CandleApiInterface::~CandleApiInterface()
 {
-
 }
 
 QString CandleApiInterface::getName() const
 {
-    return "candle" + QString::number(getId() & 0xFF);
+    return _sharedDev->productName + QString::number(_sharedDev->deviceIndex) + "_ch" + QString::number(_channel);
 }
 
 QString CandleApiInterface::getDetailsStr() const
 {
-    return QString::fromStdWString(getPath());
+    return _sharedDev->productName + " ch" + QString::number(_channel)
+           + " | " + QString::fromStdWString(getPath());
+}
+
+uint8_t CandleApiInterface::getChannel() const
+{
+    return _channel;
 }
 
 void CandleApiInterface::applyConfig(const MeasurementInterface &mi)
@@ -227,7 +264,7 @@ uint32_t CandleApiInterface::getCapabilities()
 {
     candle_capability_t caps;
 
-    if (candle_channel_get_capabilities(_handle, 0, &caps)) {
+    if (candle_channel_get_capabilities(_sharedDev->handle, _channel, &caps)) {
 
         uint32_t retval = 0;
 
@@ -259,12 +296,18 @@ QList<CanTiming> CandleApiInterface::getAvailableBitrates()
     QList<CanTiming> retval;
 
     candle_capability_t caps;
-    if (!candle_channel_get_capabilities(_handle, 0, &caps)) {
-        log_info(tr("CandleApi::getAvailableBitrates() failed!"));
+    if (!candle_channel_get_capabilities(_sharedDev->handle, _channel, &caps)) {
+        log_error(tr("CandleApi: getAvailableBitrates() failed"));
         return retval;
     }
 
     const bool isFdCapable = (caps.feature & CANDLE_FEATURE_FD) != 0;
+
+    log_debug(QStringLiteral("CandleApi: ch%1 fclk_can=%2 feature=0x%3 fd_capable=%4")
+        .arg(_channel)
+        .arg(caps.fclk_can)
+        .arg(caps.feature, 0, 16)
+        .arg(isFdCapable ? 1 : 0));
 
     int i = 0;
     if (isFdCapable) {
@@ -297,13 +340,9 @@ QList<CanTiming> CandleApiInterface::getAvailableBitrates()
 bool CandleApiInterface::setBitTiming(uint32_t bitrate, uint32_t samplePoint)
 {
     candle_capability_t caps;
-    if (!candle_channel_get_capabilities(_handle, 0, &caps)) {
-        log_info(tr("CandleApi::setBitTiming(): Could not get capabilities!"));
+    if (!candle_channel_get_capabilities(_sharedDev->handle, _channel, &caps)) {
         return false;
     }
-
-    log_debug(tr("CandleApi::setBitTiming(): looking for bitrate=%1, samplePoint=%2, fclk_can=%3")
-        .arg(bitrate).arg(samplePoint).arg(caps.fclk_can));
 
     for (const auto &t : _timings) {
         if ( (t.getBaseClk() == caps.fclk_can)
@@ -311,16 +350,15 @@ bool CandleApiInterface::setBitTiming(uint32_t bitrate, uint32_t samplePoint)
           && (t.getSamplePoint()==samplePoint) )
         {
             candle_bittiming_t timing = t.getTiming();
-            bool ok = candle_channel_set_timing(_handle, 0, &timing);
+            bool ok = candle_channel_set_timing(_sharedDev->handle, _channel, &timing);
             if (!ok) {
-                log_info(tr("CandleApi::setBitTiming(): candle_channel_set_timing() failed!"));
+                log_error(tr("CandleApi: set bittiming failed"));
             }
             return ok;
         }
     }
 
-    // no valid timing found
-    log_info(tr("CandleApi::setBitTiming(): no matching timing entry found for bitrate=%1, samplePoint=%2, fclk_can=%3")
+    log_error(tr("CandleApi: no timing entry for bitrate=%1 samplePoint=%2 fclk=%3")
         .arg(bitrate).arg(samplePoint).arg(caps.fclk_can));
     return false;
 }
@@ -328,13 +366,10 @@ bool CandleApiInterface::setBitTiming(uint32_t bitrate, uint32_t samplePoint)
 bool CandleApiInterface::setDataBitTiming(uint32_t bitrate, uint32_t samplePoint)
 {
     candle_capability_t caps;
-    if (!candle_channel_get_capabilities(_handle, 0, &caps)) {
-        log_info(tr("CandleApi::setDataBitTiming(): Could not get capabilities!"));
+    if (!candle_channel_get_capabilities(_sharedDev->handle, _channel, &caps)) {
+        log_error(tr("CandleApi: get capabilities failed"));
         return false;
     }
-
-    log_debug(tr("CandleApi::setDataBitTiming(): looking for bitrate=%1, samplePoint=%2, fclk_can=%3")
-        .arg(bitrate).arg(samplePoint).arg(caps.fclk_can));
 
     for (const auto &t : _fdTimings) {
         if ( (t.getBaseClk() == caps.fclk_can)
@@ -342,15 +377,15 @@ bool CandleApiInterface::setDataBitTiming(uint32_t bitrate, uint32_t samplePoint
           && (t.getSamplePoint() == samplePoint) )
         {
             candle_bittiming_t timing = t.getTiming();
-            bool ok = candle_channel_set_data_timing(_handle, 0, &timing);
+            bool ok = candle_channel_set_data_timing(_sharedDev->handle, _channel, &timing);
             if (!ok) {
-                log_info(tr("CandleApi::setDataBitTiming(): candle_channel_set_data_timing() failed!"));
+                log_error(tr("CandleApi: set data bittiming failed"));
             }
             return ok;
         }
     }
 
-    log_info(tr("CandleApi::setDataBitTiming(): no matching FD timing entry found for bitrate=%1, samplePoint=%2, fclk_can=%3")
+    log_error(tr("CandleApi: no FD timing entry for bitrate=%1 samplePoint=%2 fclk=%3")
         .arg(bitrate).arg(samplePoint).arg(caps.fclk_can));
     return false;
 }
@@ -358,15 +393,24 @@ bool CandleApiInterface::setDataBitTiming(uint32_t bitrate, uint32_t samplePoint
 void CandleApiInterface::open()
 {
     _isFdEnabled = false;
+    _getStateFailed = false;
 
-    if (!candle_dev_open(_handle)) {
-        log_info(tr("CandleApi::open() failed!"));
-        _isOpen = false;
-        return;
+    QMutexLocker devLock(&_sharedDev->openMutex);
+    const bool firstOpen = (_sharedDev->openCount == 0);
+
+    if (firstOpen) {
+        if (!candle_dev_open(_sharedDev->handle)) {
+            log_error(tr("CandleApi: device open failed"));
+            _isOpen = false;
+            return;
+        }
     }
 
     if (!setBitTiming(_settings.bitrate(), _settings.samplePoint())) {
-        log_info(tr("CandleApi::Bitrate failed!"));
+        log_error(tr("CandleApi: set bitrate failed"));
+        if (firstOpen) {
+            candle_dev_close(_sharedDev->handle);
+        }
         _isOpen = false;
         return;
     }
@@ -382,18 +426,54 @@ void CandleApiInterface::open()
         flags |= CANDLE_MODE_TRIPLE_SAMPLE;
     }
 
-    // Enable CAN FD if the device supports it and the user has configured it
-    if (_settings.isCanFD()) {
+    // Enable CAN FD: auto-enable on FD-capable devices even if never explicitly configured
+    {
         candle_capability_t caps;
-        if (candle_channel_get_capabilities(_handle, 0, &caps) && (caps.feature & CANDLE_FEATURE_FD)) {
-            if (!setDataBitTiming(_settings.fdBitrate(), _settings.fdSamplePoint())) {
-                log_info(tr("CandleApi::open(): FD data bittiming failed, falling back to classic CAN"));
-            } else {
-                flags |= CANDLE_MODE_FD;
-                _isFdEnabled = true;
+        if (candle_channel_get_capabilities(_sharedDev->handle, _channel, &caps) && (caps.feature & CANDLE_FEATURE_FD)) {
+            uint32_t fdBitrate = _settings.fdBitrate();
+            uint32_t fdSamplePoint = _settings.fdSamplePoint();
+
+            // Auto-select or repair FD timing:
+            // - fdBitrate==0: never configured, pick the first entry for this clock
+            // - fdBitrate>0 but SP invalid: stale config (e.g. SP saved from a
+            //   different bitrate), fall back to the first SP for the requested bitrate
+            bool spValid = false;
+            for (const auto &fd : _fdTimings) {
+                if (fd.getBaseClk() == caps.fclk_can
+                    && fd.getBitrate() == fdBitrate
+                    && fd.getSamplePoint() == fdSamplePoint)
+                {
+                    spValid = true;
+                    break;
+                }
             }
-        } else {
-            log_info(tr("CandleApi::open(): CAN FD requested but device does not support it"));
+
+            if (fdBitrate == 0 || !spValid) {
+                for (const auto &fd : _fdTimings) {
+                    if (fd.getBaseClk() == caps.fclk_can
+                        && (fdBitrate == 0 || fd.getBitrate() == fdBitrate))
+                    {
+                        if (!spValid && fdBitrate > 0) {
+                            log_warning(tr("CandleApi: FD sample point %1 invalid for %2 bit/s, using %3")
+                                .arg(fdSamplePoint).arg(fdBitrate).arg(fd.getSamplePoint()));
+                        }
+                        fdBitrate = fd.getBitrate();
+                        fdSamplePoint = fd.getSamplePoint();
+                        break;
+                    }
+                }
+            }
+
+            if (fdBitrate > 0) {
+                if (!setDataBitTiming(fdBitrate, fdSamplePoint)) {
+                    log_warning(tr("CandleApi: FD data bittiming failed, falling back to classic CAN"));
+                } else {
+                    flags |= CANDLE_MODE_FD;
+                    _isFdEnabled = true;
+                }
+            }
+        } else if (_settings.isCanFD()) {
+            log_warning(tr("CandleApi: CAN FD requested but device does not support it"));
         }
     }
 
@@ -401,16 +481,40 @@ void CandleApiInterface::open()
     _numTx = 0;
     _numTxErr = 0;
 
-    uint32_t t_dev;
-    if (candle_dev_get_timestamp_us(_handle, &t_dev)) {
-        _hostOffsetStart =
-                _backend.getUsecsAtMeasurementStart() +
-                _backend.getUsecsSinceMeasurementStart();
-        _deviceTicksStart = t_dev;
+    if (!candle_channel_start(_sharedDev->handle, _channel, flags)) {
+        log_error(tr("CandleApi: channel %1 start failed (error %2)")
+            .arg(_channel)
+            .arg(candle_dev_last_error(_sharedDev->handle)));
+        if (firstOpen) {
+            candle_dev_close(_sharedDev->handle);
+        }
+        _isOpen = false;
+        return;
     }
 
-    candle_channel_start(_handle, 0, flags);
+    if (firstOpen) {
+        uint32_t t_dev = 0;
+        const uint64_t hostNowUs =
+                _backend.getUsecsAtMeasurementStart() +
+                _backend.getUsecsSinceMeasurementStart();
+        if (candle_dev_get_timestamp_us(_sharedDev->handle, &t_dev)) {
+            _sharedDev->resetTimestampEpoch(hostNowUs, t_dev, true);
+        } else {
+            _sharedDev->resetTimestampEpoch(hostNowUs, 0, false);
+            log_warning(tr("CandleApi: device timestamp unavailable, using host clock"));
+        }
+    }
+
+    if (firstOpen) {
+        _sharedDev->startReader();
+    }
+
+    _sharedDev->openCount++;
     _isOpen = true;
+    log_debug(QStringLiteral("CandleApi: channel %1 opened, FD=%2, flags=0x%3")
+        .arg(_channel)
+        .arg(_isFdEnabled ? QStringLiteral("enabled") : QStringLiteral("disabled"))
+        .arg(flags, 8, 16, QLatin1Char('0')));
 }
 
 bool CandleApiInterface::isOpen()
@@ -420,16 +524,33 @@ bool CandleApiInterface::isOpen()
 
 void CandleApiInterface::close()
 {
-    candle_channel_stop(_handle, 0);
-    candle_dev_close(_handle);
+    candle_channel_stop(_sharedDev->handle, _channel);
+
+    QMutexLocker devLock(&_sharedDev->openMutex);
+    _sharedDev->openCount--;
+
+    if (_sharedDev->openCount == 0) {
+        _sharedDev->stopReader();
+        candle_dev_close(_sharedDev->handle);
+    }
+
     _isOpen = false;
 }
 
 void CandleApiInterface::sendMessage(const BusMessage &msg)
 {
+    // Guard against a stuck write on the other channel (e.g. device NAKing the
+    // OUT endpoint due to a CAN bus error) blocking this channel indefinitely.
+    // The PIPE_TRANSFER_TIMEOUT on the OUT pipe caps any single write at 500 ms;
+    // tryLock gives up after 200 ms so we fail fast rather than serialise.
+    if (!_sharedDev->writeMutex.tryLock(200)) {
+        _numTxErr++;
+        return;
+    }
+
     bool ok = false;
 
-    if (_isFdEnabled && msg.isFD()) {
+    if (_isFdEnabled && (msg.isFD() || msg.getLength() > 8)) {
         candle_fd_frame_t frame{};
 
         frame.can_id = msg.getId();
@@ -448,7 +569,7 @@ void CandleApiInterface::sendMessage(const BusMessage &msg)
             frame.data[i] = msg.getByte(i);
         }
 
-        ok = candle_fd_frame_send(_handle, 0, &frame);
+        ok = candle_fd_frame_send(_sharedDev->handle, _channel, &frame);
     } else {
         candle_frame_t frame{};
 
@@ -460,22 +581,30 @@ void CandleApiInterface::sendMessage(const BusMessage &msg)
             frame.can_id |= CANDLE_ID_RTR;
         }
 
-        const uint8_t len = msg.getLength();
+        const uint8_t len = std::min(msg.getLength(), static_cast<uint8_t>(8u));
         frame.can_dlc = len;
         for (int i = 0; i < len; i++) {
             frame.data[i] = msg.getByte(i);
         }
 
-        ok = candle_frame_send(_handle, 0, &frame);
+        ok = candle_frame_send(_sharedDev->handle, _channel, &frame);
     }
+
+    _sharedDev->writeMutex.unlock();
 
     if (ok) {
         _numTx++;
 
         BusMessage txMsg = msg;
+        txMsg.setFD(_isFdEnabled && (msg.isFD() || msg.getLength() > 8));
         txMsg.setRX(false);
-        auto now = std::chrono::system_clock::now().time_since_epoch();
-        txMsg.setTimestamp_us(std::chrono::duration_cast<std::chrono::microseconds>(now).count());
+        uint32_t t_dev = 0;
+        uint64_t ts_us = 0;
+        if (!candle_dev_get_timestamp_us(_sharedDev->handle, &t_dev)
+                || !_sharedDev->deviceTimestampToHostUs(t_dev, ts_us)) {
+            ts_us = static_cast<uint64_t>(QDateTime::currentMSecsSinceEpoch()) * 1000ULL;
+        }
+        txMsg.setTimestamp_us(static_cast<int64_t>(ts_us));
         QMutexLocker lock(&_txMutex);
         _txMsgList.append(txMsg);
     } else {
@@ -485,96 +614,55 @@ void CandleApiInterface::sendMessage(const BusMessage &msg)
 
 bool CandleApiInterface::readMessage(QList<BusMessage> &msglist, unsigned int timeout_ms)
 {
-    // Enqueue tx messages
+    // Enqueue tx echo messages
     {
         QMutexLocker lock(&_txMutex);
         msglist.append(_txMsgList);
         _txMsgList.clear();
     }
-    bool hasTx = !msglist.isEmpty();
-    if (hasTx) {
-        timeout_ms = 1;
+    const bool hasTx = !msglist.isEmpty();
+    const unsigned readTimeout = hasTx ? 1 : timeout_ms;
+
+    // The reader thread fills per-channel queues; we just wait for our channel.
+    CandleQueuedFrame queuedFrame;
+    if (!_sharedDev->readFrame(_channel, queuedFrame, readTimeout)) {
+        return hasTx;
     }
+    candle_fd_frame_t frame = queuedFrame.frame;
+    const candle_frametype_t frameType = candle_fd_frame_type(&frame);
+
+    _numRx++;
 
     BusMessage msg;
+    msg.setInterfaceId(getId());
+    msg.setId(candle_fd_frame_id(&frame));
+    msg.setErrorFrame(frameType == CANDLE_FRAMETYPE_ERROR);
+    msg.setExtended(candle_fd_frame_is_extended_id(&frame));
+    msg.setRTR(candle_fd_frame_is_rtr(&frame));
 
-    if (_isFdEnabled) {
-        candle_fd_frame_t frame;
-        if (!candle_fd_frame_read(_handle, &frame, timeout_ms)) {
-            return hasTx;
-        }
-        if (candle_fd_frame_type(&frame) != CANDLE_FRAMETYPE_RECEIVE) {
-            return hasTx;
-        }
+    const bool isFd = candle_fd_frame_is_fd(&frame);
+    msg.setFD(isFd);
+    msg.setBRS(isFd && candle_fd_frame_is_brs(&frame));
 
-        _numRx++;
-
-        msg.setInterfaceId(getId());
-        msg.setErrorFrame(false);
-        msg.setId(candle_fd_frame_id(&frame));
-        msg.setExtended(candle_fd_frame_is_extended_id(&frame));
-        msg.setRTR(candle_fd_frame_is_rtr(&frame));
-
-        const bool isFd = candle_fd_frame_is_fd(&frame);
-        msg.setFD(isFd);
-        msg.setBRS(isFd && candle_fd_frame_is_brs(&frame));
-
-        const uint8_t raw_dlc = candle_fd_frame_dlc(&frame);
-        const uint8_t len = isFd ? candle_dlc_to_len(raw_dlc) : raw_dlc;
-        uint8_t *data = candle_fd_frame_data(&frame);
-        msg.setLength(len);
-        for (int i = 0; i < len; i++) {
-            msg.setByte(i, data[i]);
-        }
-
-        uint32_t dev_ts = candle_fd_frame_timestamp_us(&frame) - _deviceTicksStart;
-        uint64_t ts_us = _hostOffsetStart + dev_ts;
-
-        uint64_t us_since_start = _backend.getUsecsSinceMeasurementStart();
-        if (us_since_start > 0x180000000) {
-            ts_us += us_since_start & 0xFFFFFFFF00000000;
-        }
-
-        msg.setTimestamp_us(static_cast<int64_t>(ts_us));
-        msglist.append(msg);
-        return true;
-
-    } else {
-        candle_frame_t frame;
-        if (!candle_frame_read(_handle, &frame, timeout_ms)) {
-            return hasTx;
-        }
-        if (candle_frame_type(&frame) != CANDLE_FRAMETYPE_RECEIVE) {
-            return hasTx;
-        }
-
-        _numRx++;
-
-        msg.setInterfaceId(getId());
-        msg.setErrorFrame(false);
-        msg.setId(candle_frame_id(&frame));
-        msg.setExtended(candle_frame_is_extended_id(&frame));
-        msg.setRTR(candle_frame_is_rtr(&frame));
-
-        const uint8_t dlc = candle_frame_dlc(&frame);
-        uint8_t *data = candle_frame_data(&frame);
-        msg.setLength(dlc);
-        for (int i = 0; i < dlc; i++) {
-            msg.setByte(i, data[i]);
-        }
-
-        uint32_t dev_ts = candle_frame_timestamp_us(&frame) - _deviceTicksStart;
-        uint64_t ts_us = _hostOffsetStart + dev_ts;
-
-        uint64_t us_since_start = _backend.getUsecsSinceMeasurementStart();
-        if (us_since_start > 0x180000000) {
-            ts_us += us_since_start & 0xFFFFFFFF00000000;
-        }
-
-        msg.setTimestamp_us(static_cast<int64_t>(ts_us));
-        msglist.append(msg);
-        return true;
+    const uint8_t raw_dlc = candle_fd_frame_dlc(&frame);
+    const uint8_t len = isFd ? candle_dlc_to_len(raw_dlc) : raw_dlc;
+    uint8_t *data = candle_fd_frame_data(&frame);
+    msg.setLength(len);
+    for (int i = 0; i < len; i++) {
+        msg.setByte(i, data[i]);
     }
+
+    const uint64_t ts_us = queuedFrame.timestampValid
+            ? queuedFrame.timestampUs
+            : static_cast<uint64_t>(QDateTime::currentMSecsSinceEpoch()) * 1000ULL;
+    msg.setTimestamp_us(static_cast<int64_t>(ts_us));
+    log_debug(QStringLiteral("%1 RX id=0x%2 dlc=%3 fd=%4")
+        .arg(getName())
+        .arg(candle_fd_frame_id(&frame), 0, 16)
+        .arg(len)
+        .arg(isFd ? 1 : 0));
+    msglist.append(msg);
+    return true;
 }
 
 bool CandleApiInterface::updateStatistics()
@@ -584,7 +672,27 @@ bool CandleApiInterface::updateStatistics()
 
 uint32_t CandleApiInterface::getState()
 {
-    return BusInterface::state_ok;
+    if (_getStateFailed)
+        return BusInterface::state_ok;
+
+    candle_capability_t caps;
+    if (!candle_channel_get_capabilities(_sharedDev->handle, _channel, &caps))
+        return BusInterface::state_ok;
+    if (!(caps.feature & CANDLE_FEATURE_GET_STATE))
+        return BusInterface::state_ok;
+
+    candle_can_state_t s;
+    if (!candle_channel_get_state(_sharedDev->handle, _channel, &s)) {
+        _getStateFailed = true;
+        return BusInterface::state_ok;
+    }
+
+    switch (s) {
+        case CANDLE_STATE_ERROR_WARNING: return BusInterface::state_warning;
+        case CANDLE_STATE_ERROR_PASSIVE: return BusInterface::state_passive;
+        case CANDLE_STATE_BUS_OFF:       return BusInterface::state_bus_off;
+        default:                         return BusInterface::state_ok;
+    }
 }
 
 int CandleApiInterface::getNumRxFrames()
@@ -617,14 +725,12 @@ int CandleApiInterface::getNumTxDropped()
     return 0;
 }
 
-wstring CandleApiInterface::getPath() const
+std::wstring CandleApiInterface::getPath() const
 {
-    return wstring(candle_dev_get_path(_handle));
+    return std::wstring(candle_dev_get_path(_sharedDev->handle));
 }
 
-void CandleApiInterface::update(candle_handle dev)
+QString CandleApiInterface::getVersion()
 {
-    candle_dev_free(_handle);
-    _handle = dev;
+    return "1.0";
 }
-

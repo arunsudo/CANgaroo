@@ -83,6 +83,8 @@ private:
         uint64_t tx_dropped;
     } _stats, _offset_stats;
 
+    int64_t _openEpochUs = 0;
+
     QMutex _txMutex;
     QList<BusMessage> _txMsgList;
 };

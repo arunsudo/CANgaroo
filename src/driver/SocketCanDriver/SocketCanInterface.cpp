@@ -645,7 +645,7 @@ void SocketCanInterface::sendMessage(const BusMessage &msg)
         local_fd = _fd;
     }
 
-    if (msg.isFD())
+    if (msg.isFD() || (supportsCanFD() && msg.getLength() > 8))
     {
         struct canfd_frame frame;
         memset(&frame, 0, sizeof(frame));

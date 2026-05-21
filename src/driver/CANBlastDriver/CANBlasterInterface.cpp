@@ -129,10 +129,6 @@ uint32_t CANBlasterInterface::getCapabilities()
         BusInterface::capability_listen_only |
         BusInterface::capability_auto_restart;
 
-    if (supportsCanFD()) {
-        retval |= BusInterface::capability_canfd;
-    }
-
     if (supportsTripleSampling()) {
         retval |= BusInterface::capability_triple_sampling;
     }

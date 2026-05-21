@@ -198,7 +198,7 @@ void UnifiedTraceViewModel::processNewMessages()
                     m_j1939AggregatedMap[getJ1939Key(pmsg)] = item;
                 }
             }
-        } else if (status == DecodeStatus::Ignored) {
+        } else if (status == DecodeStatus::Ignored || status == DecodeStatus::Consumed) {
             if (m_category == Cat_All) {
                 auto item = std::make_shared<UnifiedTraceItem>(msg, m_rootItem.get());
                 uint64_t ts = static_cast<uint64_t>(msg.getFloatTimestamp() * 1000000.0);
@@ -514,10 +514,13 @@ QString UnifiedTraceViewModel::formatUnifiedTimestamp(uint64_t ts, uint64_t prev
                 .arg(msec, 3, 10, QLatin1Char('0'));
         }
         case timestamp_mode_relative:
-            val = static_cast<double>(ts - static_cast<uint64_t>(backend()->getTimestampAtMeasurementStart() * 1000000.0)) / 1000000.0;
+        {
+            const uint64_t startTs = static_cast<uint64_t>(backend()->getTimestampAtMeasurementStart() * 1000000.0);
+            val = (ts >= startTs) ? static_cast<double>(ts - startTs) / 1000000.0 : 0.0;
             break;
+        }
         case timestamp_mode_delta:
-            val = (prevTs > 0) ? static_cast<double>(ts - prevTs) / 1000000.0 : 0.0;
+            val = (prevTs > 0 && ts >= prevTs) ? static_cast<double>(ts - prevTs) / 1000000.0 : 0.0;
             break;
         default:
             return QStringLiteral("0.000");

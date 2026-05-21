@@ -50,7 +50,7 @@ DecodeStatus J1939Decoder::tryDecode(const BusMessage& frame, ProtocolMessage& o
                 
                 if (session.pgn == 0xFEEC) outMsg.name = "Vehicle Identification (VIN)";
                 else if (session.pgn == 0xF004) outMsg.name = "Electronic Engine Controller 1 (EEC1)";
-                else outMsg.name = QString("PGN: 0x%2")
+                else outMsg.name = QString("PGN: 0x%1")
                   .arg(session.pgn, 4, 16, QChar('0').toUpper());
                 
                 // Populate metadata from the first frame (CM header)
@@ -85,7 +85,7 @@ DecodeStatus J1939Decoder::tryDecode(const BusMessage& frame, ProtocolMessage& o
         
         if (pgn == 0xFEEC) outMsg.name = "Vehicle Identification (VIN)";
         else if (pgn == 0xF004) outMsg.name = "Electronic Engine Controller 1 (EEC1)";
-        else outMsg.name = QString("PGN: 0x%2")
+        else outMsg.name = QString("PGN: 0x%1")
                   .arg(pgn, 4, 16, QChar('0').toUpper());
         
         if (isPDU1) {

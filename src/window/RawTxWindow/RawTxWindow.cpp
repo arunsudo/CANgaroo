@@ -283,6 +283,7 @@ void RawTxWindow::onFieldChanged()
     bool fd = _cbFD->isChecked();
     if (dlc > 8 && !fd) {
         _cbFD->setChecked(true);
+        return;
     }
 
     _can_msg.setId(id);

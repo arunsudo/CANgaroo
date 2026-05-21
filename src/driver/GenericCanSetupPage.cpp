@@ -98,6 +98,17 @@ void GenericCanSetupPage::onShowInterfacePage(SetupDialog &dlg, MeasurementInter
     dlg.displayPage(this);
 
     _enable_ui_updates = true;
+
+    // Sync MI from the actual combo state. The fill functions may have snapped
+    // combos to different values (e.g. a saved SP that is not valid for the
+    // selected bitrate, or fdBitrate==0 defaulting to the first available entry).
+    // Without this sync, opening the dialog and clicking OK without touching
+    // anything would preserve the stale values in _mi.
+    _mi->setBitrate(ui->cbBitrate->currentData().toUInt());
+    _mi->setSamplePoint(ui->cbSamplePoint->currentData().toUInt());
+    _mi->setFdBitrate(ui->cbBitrateFD->currentData().toUInt());
+    _mi->setFdSamplePoint(ui->cbSamplePointFD->currentData().toUInt());
+    _mi->setCanFD(ui->cbBitrateFD->currentData().toUInt() > 0 || ui->cbCustomFdBitrate->isChecked());
 }
 
 void GenericCanSetupPage::updateUI()
@@ -114,6 +125,7 @@ void GenericCanSetupPage::updateUI()
         _mi->setSamplePoint(ui->cbSamplePoint->currentData().toUInt());
         _mi->setFdBitrate(ui->cbBitrateFD->currentData().toUInt());
         _mi->setFdSamplePoint(ui->cbSamplePointFD->currentData().toUInt());
+        _mi->setCanFD(_mi->fdBitrate() > 0 || ui->cbCustomFdBitrate->isChecked());
 
         _mi->setCustomBitrateEn(ui->cbCustomBitrate->isChecked());
         _mi->setCustomFdBitrateEn(ui->cbCustomFdBitrate->isChecked());
@@ -236,6 +248,13 @@ void GenericCanSetupPage::updateUI()
             ui->cbBitrateFD->currentData().toUInt(),
             ui->cbSamplePointFD->currentData().toUInt()
         );
+
+        // Re-read SP values after the fill functions may have snapped the combos
+        // to a different entry (e.g. when the bitrate changed and the previous SP
+        // is not available at the new bitrate).
+        _mi->setSamplePoint(ui->cbSamplePoint->currentData().toUInt());
+        _mi->setFdSamplePoint(ui->cbSamplePointFD->currentData().toUInt());
+
         _enable_ui_updates = true;
     }
 }

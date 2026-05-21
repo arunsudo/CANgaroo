@@ -125,6 +125,8 @@ void TinyCanInterface::open()
         return;
     }
 
+    _openEpochUs = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
     _isOpen.store(true);
     log_info(QString("TinyCanInterface %1: opened").arg(_name));
 }
@@ -227,7 +229,9 @@ bool TinyCanInterface::readMessage(QList<BusMessage> &msglist, unsigned int time
     msg.setInterfaceId(getId());
 
     const QCanBusFrame::TimeStamp ts = frame.timeStamp();
-    msg.setTimestamp(ts.seconds(), ts.microSeconds());
+    msg.setTimestamp_us(_openEpochUs
+        + static_cast<int64_t>(ts.seconds()) * 1000000LL
+        + static_cast<int64_t>(ts.microSeconds()));
 
     const QByteArray payload = frame.payload();
     uint8_t len = static_cast<uint8_t>(qMin(payload.size(), 8));

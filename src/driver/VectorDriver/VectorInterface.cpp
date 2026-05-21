@@ -147,6 +147,8 @@ void VectorInterface::open()
         return;
     }
 
+    _openEpochUs = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
     _isOpen.store(true);
     log_info(QString("VectorInterface %1: opened").arg(_name));
 }
@@ -261,7 +263,9 @@ bool VectorInterface::readMessage(QList<BusMessage> &msglist, unsigned int timeo
     msg.setBRS(isFD && frame.hasBitrateSwitch());
 
     const QCanBusFrame::TimeStamp ts = frame.timeStamp();
-    msg.setTimestamp(ts.seconds(), ts.microSeconds());
+    msg.setTimestamp_us(_openEpochUs
+        + static_cast<int64_t>(ts.seconds()) * 1000000LL
+        + static_cast<int64_t>(ts.microSeconds()));
 
     const QByteArray payload = frame.payload();
     const int maxLen = isFD ? 64 : 8;
