@@ -184,6 +184,21 @@ public:
 
     void CanSetConfig(uint8_t ch, uint32_t baud, bool listen, bool echoTx, bool abom);
 
+    /**
+     * @brief Sends a SYSTEM_SEND_CANFD_CFG command to configure a CAN FD channel.
+     *
+     * Sets both the arbitration-phase and data-phase baudrates. Pass @p dataBaud = 0
+     * to disable BRS (data phase runs at the arbitration rate).
+     *
+     * @param ch        Zero-based channel index.
+     * @param arbBaud   Arbitration phase baudrate in bits/s (e.g. 500000).
+     * @param dataBaud  Data phase baudrate in bits/s (e.g. 2000000); 0 = no BRS.
+     * @param listen    true for listen-only mode.
+     * @param echoTx    true to enable TX echo.
+     * @param abom      true to enable automatic bus-off recovery.
+     */
+    void CanSetFdConfig(uint8_t ch, uint32_t arbBaud, uint32_t dataBaud, bool listen, bool echoTx, bool abom);
+
     void LinSetConfig(uint8_t ch, uint32_t baud, bool master, uint8_t protocol, uint8_t timebase, uint16_t jitter_us);
 
     void LinAddFrame(uint8_t ch, const BusMessage &msg, uint8_t frame_time);

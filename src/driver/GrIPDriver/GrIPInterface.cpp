@@ -352,8 +352,24 @@ void GrIPInterface::open()
 
         // Apply bit rate — use custom value if set, otherwise use the selected preset.
         const uint32_t baud = _settings.isCustomBitrate() ? _settings.customBitrate() : _settings.bitrate();
+        const uint32_t arbBaud = baud > 0 ? baud : 500000;
 
-        m_GrIPHandler->CanSetConfig(_channel_idx, baud > 0 ? baud : 500000, _settings.isListenOnlyMode(), true, _settings.doAutoRestart());
+        const bool channelSupportsFd = (_deviceCaps & GRIP_CAP_CAN_FD) != 0;
+
+        if (channelSupportsFd)
+        {
+            // Send CAN FD config with separate data-phase baudrate.
+            const uint32_t dataBaud = _settings.isCustomFdBitrate()
+                ? _settings.customFdBitrate()
+                : _settings.fdBitrate();
+            m_GrIPHandler->CanSetFdConfig(_channel_idx, arbBaud, dataBaud > 0 ? dataBaud : arbBaud,
+                                          _settings.isListenOnlyMode(), true, _settings.doAutoRestart());
+        }
+        else
+        {
+            m_GrIPHandler->CanSetConfig(_channel_idx, arbBaud, _settings.isListenOnlyMode(), true, _settings.doAutoRestart());
+        }
+
         m_GrIPHandler->CanEnableChannel(_channel_idx, true);
     }
     else if (_manufacturer == CANIL_LIN)

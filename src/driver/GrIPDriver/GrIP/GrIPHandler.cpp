@@ -29,6 +29,7 @@
 #define SYSTEM_SEND_GPIO_CFG            32u // Configure GPIO pin directions and report cycle time
 #define SYSTEM_SET_GPIO_OUTPUT          33u // Set GPIO pin output states
 #define SYSTEM_GET_CHANNEL_CAPABILITIES 34u // Request capability bitmask for a given channel
+#define SYSTEM_SEND_CANFD_CFG           35u // Configure CAN FD channel (arb + data phase baudrates)
 
 // ---------------------------------------------------------------------------
 // CAN frame flag bits — stored in Protocol_CanFrame_t::Flags
@@ -76,6 +77,18 @@ typedef struct __attribute__((packed))
     uint8_t ABOM;
     uint8_t ListenMode;
 } Protocol_CanConfig_t;
+
+// Payload for SYSTEM_SEND_CANFD_CFG — configures CAN FD arbitration and data phase.
+typedef struct __attribute__((packed))
+{
+    Protocol_SystemHeader_t Header;
+    uint8_t  Channel;
+    uint32_t ArbBaudrate;   // Arbitration phase baudrate (Hz)
+    uint32_t DataBaudrate;  // Data phase baudrate (Hz); 0 = same as arb (no BRS)
+    uint8_t  EchoTx;
+    uint8_t  ABOM;
+    uint8_t  ListenMode;
+} Protocol_CanFdConfig_t;
 
 // Payload for SYSTEM_START_CAN — carries the enable state for both channels.
 typedef struct __attribute__((packed))
@@ -541,6 +554,28 @@ void GrIPHandler::CanSetConfig(uint8_t ch, uint32_t baud, bool listen, bool echo
     std::ignore = GrIP_Transmit(PROT_GrIP, MSG_SYSTEM_CMD, RET_OK, &p);
 }
 
+void GrIPHandler::CanSetFdConfig(uint8_t ch, uint32_t arbBaud, uint32_t dataBaud, bool listen, bool echoTx, bool abom)
+{
+    Protocol_CanFdConfig_t cfg = {};
+
+    cfg.Header.Version  = GRIP_HEADER_VERSION;
+    cfg.Header.Command  = SYSTEM_SEND_CANFD_CFG;
+    cfg.Header.Length   = sizeof(Protocol_CanFdConfig_t) - sizeof(Protocol_SystemHeader_t);
+    cfg.Header.Data     = 0;
+
+    cfg.Channel      = ch;
+    cfg.ArbBaudrate  = arbBaud;
+    cfg.DataBaudrate = dataBaud;
+    cfg.EchoTx       = echoTx;
+    cfg.ABOM         = abom;
+    cfg.ListenMode   = listen;
+
+    GrIP_Pdu_t p = {reinterpret_cast<uint8_t *>(&cfg), sizeof(Protocol_CanFdConfig_t)};
+
+    std::unique_lock<std::mutex> lck(m_MutexSerial);
+    std::ignore = GrIP_Transmit(PROT_GrIP, MSG_SYSTEM_CMD, RET_OK, &p);
+}
+
 void GrIPHandler::LinSetConfig(uint8_t ch, uint32_t baud, bool master, uint8_t protocol, uint8_t timebase, uint16_t jitter_us)
 {
     Protocol_LinConfig_t cfg = {};
@@ -789,6 +824,10 @@ bool GrIPHandler::CanTransmit(uint8_t ch, const BusMessage &msg)
     if (msg.isFD())
     {
         frame.Flags |= CAN_FLAGS_FD;
+    }
+    if (msg.isBRS())
+    {
+        frame.Flags |= CAN_FLAGS_BRS;
     }
     if (msg.isRTR())
     {

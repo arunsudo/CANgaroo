@@ -1,6 +1,7 @@
 #include "UnifiedTraceViewModel.h"
 #include "core/BusTrace.h"
 #include "core/Backend.h"
+#include "core/DBC/LinFrame.h"
 #include <QColor>
 #include <QSet>
 #include <QDateTime>
@@ -480,6 +481,8 @@ QVariant UnifiedTraceViewModel::data_DisplayRole(const QModelIndex &index, [[may
             case column_channel: return backend()->getInterfaceName(msg.getInterfaceId());
             case column_direction: return msg.isRX() ? tr("RX") : tr("TX");
             case column_type: {
+                if (msg.busType() == BusType::LIN)
+                    return QStringLiteral("LIN");
                 QString t;
                 if (msg.isFD())       t += QStringLiteral("FD.");
                 if (msg.isExtended()) t += QStringLiteral("EXT"); else t += QStringLiteral("STD");
@@ -491,6 +494,10 @@ QVariant UnifiedTraceViewModel::data_DisplayRole(const QModelIndex &index, [[may
             case column_dlc: return msg.getLength();
             case column_data: return msg.getDataHexString();
             case column_name:
+                if (msg.busType() == BusType::LIN) {
+                    LinFrame *linFrame = backend()->findLinFrame(msg);
+                    return linFrame ? linFrame->name() : QStringLiteral("");
+                }
                 if (item->parentItem() != m_rootItem.get()) {
                     uint8_t firstByte = msg.getByte(0);
                     uint8_t type = (firstByte >> 4) & 0x0F;
@@ -507,7 +514,13 @@ QVariant UnifiedTraceViewModel::data_DisplayRole(const QModelIndex &index, [[may
                     CanDbMessage *dbmsg = backend()->findDbMessage(msg);
                     return (dbmsg) ? dbmsg->getComment() : "";
                 }
-            case column_sender: return "";
+            case column_sender: {
+                if (msg.busType() == BusType::LIN) {
+                    LinFrame *linFrame = backend()->findLinFrame(msg);
+                    return linFrame ? linFrame->publisher() : QStringLiteral("");
+                }
+                return "";
+            }
             default: return QVariant();
         }
     }
