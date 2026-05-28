@@ -1,6 +1,6 @@
 /*
 
-  Copyright (c) 2024 Schildkroet
+  Copyright (c) 2024 - 2026 Schildkroet
 
   This file is part of CANgaroo.
 
@@ -115,6 +115,9 @@ void GpioControlWindow::clearRows()
 {
     for (auto *panel : std::as_const(_panels))
     {
+        if (panel->enableChk->isChecked())
+            panel->handler->GpioSetConfig(false, static_cast<uint8_t>(panel->cycleSpin->value()), panel->dirMask);
+
         panel->handler->disconnect(this);
         panel->container->deleteLater();
         delete panel;

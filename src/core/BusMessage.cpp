@@ -20,8 +20,6 @@
 
 */
 
-
-
 #include "BusMessage.h"
 #include "core/portable_endian.h"
 
