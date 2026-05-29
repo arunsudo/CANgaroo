@@ -1073,7 +1073,7 @@ void MainWindow::stopMeasurement()
 void MainWindow::saveTraceToFile()
 {
     const QString filters("Vector ASC (*.asc);;Vector MDF4 (*.mf4);;Linux candump (*.candump);;PCAP (*.pcap);;PCAPng (*.pcapng)");
-    const QString defaultFilter("Vector ASC (*.asc)");
+    const QString defaultFilter = settings.value("ui/preferredSaveFormat", "Vector ASC (*.asc)").toString();
 
     QFileDialog fileDialog(nullptr, tr("Save Trace to file"), QDir::currentPath(), filters);
     fileDialog.setAcceptMode(QFileDialog::AcceptSave);
@@ -1267,6 +1267,13 @@ void MainWindow::showSettingsDialog()
 
     // Apply skip-save-prompt setting.
     settings.setValue("ui/skipSaveWorkspacePrompt", dlg.skipSaveWorkspacePrompt());
+
+    // Apply preferred save format.
+    settings.setValue("ui/preferredSaveFormat", dlg.preferredSaveFormat());
+
+    // Apply trace window defaults.
+    settings.setValue("tracewindow/defaultViewMode",      dlg.defaultTraceViewMode());
+    settings.setValue("tracewindow/defaultTimestampMode", dlg.defaultTimestampMode());
 }
 
 #if defined(_WIN32)

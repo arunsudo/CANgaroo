@@ -41,10 +41,16 @@ public:
     int selectedFontSize() const;
     bool uds29BitEnabled() const;
     bool skipSaveWorkspacePrompt() const;
+    QString preferredSaveFormat() const;
+    int defaultTraceViewMode() const;
+    int defaultTimestampMode() const;
 
 private:
     QComboBox *m_themeCombo;
     QComboBox *m_languageCombo;
+    QComboBox *m_saveFormatCombo;
+    QComboBox *m_defaultTraceViewCombo;
+    QComboBox *m_defaultTimestampCombo;
     QCheckBox *m_restoreWindowCheck;
     QCheckBox *m_clearTraceOnStartCheck;
     QCheckBox *m_uds29BitCheck;
