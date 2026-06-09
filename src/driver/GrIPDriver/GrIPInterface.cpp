@@ -26,6 +26,7 @@
 #include <QThread>
 
 #include "core/Backend.h"
+#include "core/Log.h"
 #include "core/BusMessage.h"
 #include "core/DBC/LinDb.h"
 #include "core/MeasurementInterface.h"
@@ -386,7 +387,11 @@ void GrIPInterface::open()
             if (ldb.loadFile(_settings.linLdfPath()))
             {
                 const bool isMaster     = _settings.linNodeMode() == LinNodeMode::Master;
+                const bool isListenOnly = _settings.linListenOnly();
                 const QString slaveNode = _settings.linSlaveNode();
+
+                // mode: 0 = master, 1 = slave, 2 = slave_listenonly
+                const uint8_t linMode = isMaster ? 0u : (isListenOnly ? 2u : 1u);
 
                 // For master: use the first slave's diag timings; for slave: use own node's timings.
                 const QString diagNode  = isMaster ? ldb.slaveNodes().value(0) : slaveNode;
@@ -395,7 +400,7 @@ void GrIPInterface::open()
                 m_GrIPHandler->LinSetConfig(
                     _channel_idx,
                     _settings.linBaudRate(),
-                    isMaster,
+                    linMode,
                     static_cast<uint8_t>(_settings.linProtocolVersion()),
                     _settings.linTimebaseMs(),
                     _settings.linJitterUs(),
@@ -406,42 +411,52 @@ void GrIPInterface::open()
                 );
                 QThread::msleep(5);
 
-                const int tableCount = ldb.scheduleTableNames().size();
-
-                for (int tableIndex = 0; tableIndex < tableCount; ++tableIndex)
+                if (!isListenOnly)
                 {
-                    m_GrIPHandler->LinSetScheduleTable(_channel_idx, static_cast<uint8_t>(tableIndex));
-                    QThread::msleep(2);
+                    const int ldfTableCount  = ldb.scheduleTableNames().size();
+                    const int maxTableCount  = m_GrIPHandler->Channels_LinScheduleTables();
+                    const int tableCount     = (maxTableCount > 0 && ldfTableCount > maxTableCount)
+                                               ? maxTableCount : ldfTableCount;
 
-                    const auto entries = ldb.scheduleTableEntries(tableIndex);
-                    for (const LinScheduleEntry &entry : entries)
+                    if (maxTableCount > 0 && ldfTableCount > maxTableCount)
+                        log_warning(QString("GrIP: LDF contains %1 schedule tables but device supports only %2 — truncating to %2.")
+                                    .arg(ldfTableCount).arg(maxTableCount));
+
+                    for (int tableIndex = 0; tableIndex < tableCount; ++tableIndex)
                     {
-                        if (!isMaster && entry.publisherName != slaveNode)
-                            continue;
+                        m_GrIPHandler->LinSetScheduleTable(_channel_idx, static_cast<uint8_t>(tableIndex));
+                        QThread::msleep(2);
 
-                        // TX when this node is the publisher of the frame, RX otherwise.
-                        const bool isRX = isMaster ? entry.isMasterPublisher : (entry.publisherName == slaveNode);
-
-                        BusMessage msg;
-                        msg.setId(entry.frameId);
-                        msg.setLength(entry.dlc);
-                        msg.setRX(isRX);
-
-                        const auto &defaults = _settings.linFrameDefaults();
-                        if (auto it = defaults.find(static_cast<uint8_t>(entry.frameId)); it != defaults.end())
+                        const auto entries = ldb.scheduleTableEntries(tableIndex);
+                        for (const LinScheduleEntry &entry : entries)
                         {
-                            const QByteArray &payload = it.value();
-                            for (int i = 0; i < payload.size() && i < entry.dlc; ++i)
-                                msg.setDataAt(static_cast<uint8_t>(i), static_cast<uint8_t>(payload[i]));
+                            if (!isMaster && entry.publisherName != slaveNode)
+                                continue;
+
+                            // TX when this node is the publisher of the frame, RX otherwise.
+                            const bool isRX = isMaster ? entry.isMasterPublisher : (entry.publisherName == slaveNode);
+
+                            BusMessage msg;
+                            msg.setId(entry.frameId);
+                            msg.setLength(entry.dlc);
+                            msg.setRX(isRX);
+
+                            const auto &defaults = _settings.linFrameDefaults();
+                            if (auto it = defaults.find(static_cast<uint8_t>(entry.frameId)); it != defaults.end())
+                            {
+                                const QByteArray &payload = it.value();
+                                for (int i = 0; i < payload.size() && i < entry.dlc; ++i)
+                                    msg.setDataAt(static_cast<uint8_t>(i), static_cast<uint8_t>(payload[i]));
+                            }
+
+                            m_GrIPHandler->LinAddFrame(_channel_idx, msg, entry.delayMs, entry.isSporadic);
                         }
-
-                        m_GrIPHandler->LinAddFrame(_channel_idx, msg, entry.delayMs);
                     }
-                }
 
-                // Activate the user-selected schedule table last
-                m_GrIPHandler->LinSetScheduleTable(_channel_idx, _settings.linScheduleTableIndex());
-                QThread::msleep(2);
+                    // Activate the user-selected schedule table last
+                    m_GrIPHandler->LinSetScheduleTable(_channel_idx, _settings.linScheduleTableIndex());
+                    QThread::msleep(2);
+                }
             }
             QThread::msleep(10);
 

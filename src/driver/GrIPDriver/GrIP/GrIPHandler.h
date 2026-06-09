@@ -167,6 +167,12 @@ public:
     /** @return Number of LIN channels reported by the device. */
     int Channels_LIN() const;
 
+    /** @return Number of LIN schedule tables per channel reported by the device. */
+    int Channels_LinScheduleTables() const;
+
+    /** @return Maximum number of cyclic CAN messages reported by the device. */
+    int MaxCyclicCAN() const;
+
     /**
      * @brief Enables or disables a CAN channel.
      *
@@ -219,7 +225,7 @@ public:
      */
     void CanSetFdConfig(uint8_t ch, uint32_t arbBaud, uint32_t dataBaud, bool listen, bool echoTx, bool abom);
 
-    void LinSetConfig(uint8_t ch, uint32_t baud, bool master, uint8_t protocol,
+    void LinSetConfig(uint8_t ch, uint32_t baud, uint8_t mode, uint8_t protocol,
                       uint8_t timebase, uint16_t jitter_us,
                       uint16_t diagSTmin_ms = 0, uint16_t diagP2min_ms = 25,
                       uint16_t diagNAs_ms = 25, uint16_t diagNCr_ms = 1000);
@@ -234,7 +240,7 @@ public:
      */
     void LinSendDiagRequest(uint8_t ch, uint8_t nad, const uint8_t *data, uint8_t len);
 
-    void LinAddFrame(uint8_t ch, const BusMessage &msg, uint8_t frame_time);
+    void LinAddFrame(uint8_t ch, const BusMessage &msg, uint8_t frame_time, bool isSporadic = false);
 
     uint8_t  CanGetState(uint8_t ch) const;
     uint16_t CanGetRxDropCount(uint8_t ch) const;
@@ -421,8 +427,10 @@ private:
     // --- Device state ---
     std::string m_Version;                ///< Firmware version string, set on SYSTEM_REPORT_INFO reply.
     int m_ChannelsCAN = 0;                ///< Number of classic CAN channels, set on SYSTEM_REPORT_INFO reply.
-    int m_ChannelsCANFD = 0;              ///< Number of CAN-FD channels, set on SYSTEM_REPORT_INFO reply.
-    int m_ChannelsLIN = 0;
+    int m_ChannelsCANFD = 0;             ///< Number of CAN-FD channels, set on SYSTEM_REPORT_INFO reply.
+    int m_ChannelsLIN = 0;               ///< Number of LIN channels, set on SYSTEM_REPORT_INFO reply.
+    int m_LinScheduleTables = 0;         ///< LIN schedule tables per channel, set on SYSTEM_REPORT_INFO reply.
+    int m_MaxCyclicCAN = 0;              ///< Maximum number of cyclic CAN messages, set on SYSTEM_REPORT_INFO reply.
     std::vector<bool> m_Channel_StatusCAN; ///< Per-channel enabled state, indexed identically to m_ReceiveQueue.
     std::vector<bool> m_Channel_StatusLIN;
 

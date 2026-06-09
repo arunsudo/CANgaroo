@@ -56,6 +56,9 @@
 #define LIN_SLEEP_WAKEUP_ACTION_WAKEUP  1u
 
 // ---------------------------------------------------------------------------
+// LIN frame flag bits — used in Protocol_LinFrame_t::Flags for SYSTEM_ADD_LIN_FRAME
+static constexpr uint8_t LIN_FLAGS_SPORADIC = 0x10; // Frame belongs to a sporadic slot
+
 // CAN frame flag bits — stored in Protocol_CanFrame_t::Flags
 // ---------------------------------------------------------------------------
 #define CAN_FLAGS_EXT_ID        0x01 // Extended (29-bit) CAN identifier
@@ -172,16 +175,18 @@ typedef struct __attribute__((packed))
 // Reply payload for SYSTEM_REPORT_INFO — sent by the device in response to a version request.
 typedef struct __attribute__((packed))
 {
-    uint8_t SubCommand;     // Always 0 for SYSTEM_REPORT_INFO reply
-    uint8_t Major;          // Firmware major version
-    uint8_t Minor;          // Firmware minor version
-    uint8_t HwRevision;     // Hardware revision (reserved)
-    uint8_t ChannelsCAN;    // Number of classic CAN channels
-    uint8_t ChannelsCANFD;  // Number of CAN-FD channels
-    uint8_t ChannelsLIN;    // Number of LIN channels
-    uint8_t ChannelsADC;    // Number of ADC channels (reserved)
-    uint8_t ChannelsGPIO;   // Number of GPIO channels (reserved)
-    char    BuildDate[128]; // Null-terminated build date string
+    Protocol_SystemHeader_t Header;     // Header.Command = SYSTEM_REPORT_INFO
+    uint8_t Major;                      // Firmware major version
+    uint8_t Minor;                      // Firmware minor version
+    uint8_t HwRevision;                 // Hardware revision (reserved)
+    uint8_t ChannelsCAN;                // Number of classic CAN channels
+    uint8_t ChannelsCANFD;              // Number of CAN-FD channels
+    uint8_t ChannelsLIN;                // Number of LIN channels
+    uint8_t ChannelsADC;                // Number of ADC channels (reserved)
+    uint8_t ChannelsGPIO;               // Number of GPIO channels (reserved)
+    uint8_t LinScheduleTables;          // LIN schedule tables per channel
+    uint8_t MaxCyclicCAN;               // Maximum number of cyclic CAN messages
+    char    BuildDate[128];             // Null-terminated build date string
 } Protocol_SystemInfoReply_t;
 
 typedef struct __attribute__((packed))
@@ -427,6 +432,18 @@ int GrIPHandler::Channels_LIN() const
     return m_ChannelsLIN;
 }
 
+int GrIPHandler::Channels_LinScheduleTables() const
+{
+    std::unique_lock<std::mutex> lck(m_MutexData);
+    return m_LinScheduleTables;
+}
+
+int GrIPHandler::MaxCyclicCAN() const
+{
+    std::unique_lock<std::mutex> lck(m_MutexData);
+    return m_MaxCyclicCAN;
+}
+
 // ---------------------------------------------------------------------------
 // Low-level send helpers
 // ---------------------------------------------------------------------------
@@ -631,7 +648,7 @@ void GrIPHandler::CanSetFdConfig(uint8_t ch, uint32_t arbBaud, uint32_t dataBaud
     std::ignore = GrIP_Transmit(PROT_GrIP, MSG_SYSTEM_CMD, RET_OK, &p);
 }
 
-void GrIPHandler::LinSetConfig(uint8_t ch, uint32_t baud, bool master, uint8_t protocol,
+void GrIPHandler::LinSetConfig(uint8_t ch, uint32_t baud, uint8_t mode, uint8_t protocol,
                                uint8_t timebase, uint16_t jitter_us,
                                uint16_t diagSTmin_ms, uint16_t diagP2min_ms,
                                uint16_t diagNAs_ms, uint16_t diagNCr_ms)
@@ -645,7 +662,7 @@ void GrIPHandler::LinSetConfig(uint8_t ch, uint32_t baud, bool master, uint8_t p
 
     cfg.Channel      = ch;
     cfg.Baudrate     = static_cast<uint16_t>(baud);
-    cfg.Mode         = master ? 0u : 1u;
+    cfg.Mode         = mode;
     cfg.Protocol     = protocol;
     cfg.Timebase     = timebase;
     cfg.Jitter       = jitter_us;
@@ -748,7 +765,7 @@ uint32_t GrIPHandler::GetChannelCapabilities(uint8_t busType, uint8_t channel) c
     return it != m_ChannelCapabilities.end() ? it->second : 0u;
 }
 
-void GrIPHandler::LinAddFrame(uint8_t ch, const BusMessage &msg, uint8_t frame_time)
+void GrIPHandler::LinAddFrame(uint8_t ch, const BusMessage &msg, uint8_t frame_time, bool isSporadic)
 {
     Protocol_LinFrame_t frame = {};
 
@@ -757,11 +774,12 @@ void GrIPHandler::LinAddFrame(uint8_t ch, const BusMessage &msg, uint8_t frame_t
     frame.Header.Length = sizeof(Protocol_LinFrame_t) - sizeof(Protocol_SystemHeader_t);
     frame.Header.Data = 0;
 
-    frame.Channel = ch;
-    frame.ID = static_cast<uint8_t>(msg.getId());
-    frame.DLC = msg.getLength();
+    frame.Channel   = ch;
+    frame.ID        = static_cast<uint8_t>(msg.getId());
+    frame.DLC       = msg.getLength();
     frame.Direction = msg.isRX() ? 0 : 1;
-    frame.Delay = frame_time;
+    frame.Delay     = frame_time;
+    frame.Flags     = isSporadic ? LIN_FLAGS_SPORADIC : 0u;
 
     std::memcpy(frame.Data, msg.getData(), msg.getLength());
 
@@ -993,18 +1011,23 @@ void GrIPHandler::ProcessData(GrIP_Packet_t &packet, qint64 rxTimestamp_ms)
     switch (packet.RX_Header.MsgType)
     {
     case MSG_SYSTEM_CMD:
-        switch (packet.Data[0])
+    {
+        const Protocol_SystemHeader_t* hdr =
+            reinterpret_cast<const Protocol_SystemHeader_t*>(packet.Data);
+        switch (hdr->Command)
         {
-        case 0: // SYSTEM_REPORT_INFO reply
+        case SYSTEM_REPORT_INFO:
         {
             Protocol_SystemInfoReply_t info;
             std::memcpy(&info, packet.Data, sizeof(Protocol_SystemInfoReply_t));
             info.BuildDate[sizeof(info.BuildDate) - 1] = '\0'; // Ensure null-termination
 
             m_Version = std::format("{}.{}-<{}>", info.Major, info.Minor, info.BuildDate);
-            m_ChannelsCAN = info.ChannelsCAN;
-            m_ChannelsCANFD = info.ChannelsCANFD;
-            m_ChannelsLIN = info.ChannelsLIN;
+            m_ChannelsCAN       = info.ChannelsCAN;
+            m_ChannelsCANFD     = info.ChannelsCANFD;
+            m_ChannelsLIN       = info.ChannelsLIN;
+            m_LinScheduleTables = info.LinScheduleTables;
+            m_MaxCyclicCAN      = info.MaxCyclicCAN;
 
             // Rebuild per-channel queues to match the reported channel count.
             // CAN-FD channels follow classic CAN channels in the same vectors.
@@ -1035,6 +1058,7 @@ void GrIPHandler::ProcessData(GrIP_Packet_t &packet, qint64 rxTimestamp_ms)
             break;
         }
         break;
+    }
 
     case MSG_REALTIME_CMD:
         break;

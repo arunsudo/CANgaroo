@@ -138,6 +138,21 @@ bool LinDb::loadFile(const QString &path)
     {
         _scheduleTableNames.append(QString::fromStdString(tbl.name));
 
+        // Build a lookup from sporadic frame name → its underlying unconditional frame names.
+        // Used below to expand sporadic schedule entries.
+        std::unordered_map<std::string, const ldf::SporadicFrame*> sporadicByName;
+        for (const auto &sf : ldf.sporadic_frames)
+            sporadicByName.emplace(sf.name, &sf);
+
+        // Helper: fill resolved fields of a LinScheduleEntry from a raw ldf::Frame.
+        const auto resolveFrame = [&](LinScheduleEntry &entry, const ldf::Frame &ldfFrame)
+        {
+            entry.frameId           = ldfFrame.id;
+            entry.dlc               = ldfFrame.length;
+            entry.publisherName     = QString::fromStdString(ldfFrame.publisher);
+            entry.isMasterPublisher = (ldfFrame.publisher == ldf.nodes.master);
+        };
+
         QVector<LinScheduleEntry> entries;
         for (const auto &e : tbl.entries)
         {
@@ -145,21 +160,43 @@ bool LinDb::loadFile(const QString &path)
                 continue;
 
             const auto &cmd = std::get<ldf::UnconditionalCmd>(e.command);
-            const QString frameName = QString::fromStdString(cmd.frame_name);
+            const uint8_t delayMs = static_cast<uint8_t>(qBound(0.0, e.delay_s * 1000.0, 255.0));
 
+            // Check if this name refers to a sporadic frame group.
+            if (auto it = sporadicByName.find(cmd.frame_name); it != sporadicByName.end())
+            {
+                // Expand: one LinScheduleEntry per underlying unconditional frame.
+                for (const auto &underlyingName : it->second->frames)
+                {
+                    LinScheduleEntry entry;
+                    entry.frameName  = QString::fromStdString(underlyingName);
+                    entry.delayMs    = delayMs;
+                    entry.isSporadic = true;
+
+                    for (const auto &ldfFrame : ldf.frames)
+                    {
+                        if (ldfFrame.name == underlyingName)
+                        {
+                            resolveFrame(entry, ldfFrame);
+                            break;
+                        }
+                    }
+
+                    entries.append(entry);
+                }
+                continue;
+            }
+
+            // Unconditional frame — resolve directly.
             LinScheduleEntry entry;
-            entry.frameName  = frameName;
-            entry.delayMs    = static_cast<uint8_t>(qBound(0.0, e.delay_s * 1000.0, 255.0));
+            entry.frameName = QString::fromStdString(cmd.frame_name);
+            entry.delayMs   = delayMs;
 
-            // Resolve frame ID and DLC from the frame definitions
             for (const auto &ldfFrame : ldf.frames)
             {
                 if (ldfFrame.name == cmd.frame_name)
                 {
-                    entry.frameId       = ldfFrame.id;
-                    entry.dlc           = ldfFrame.length;
-                    entry.publisherName = QString::fromStdString(ldfFrame.publisher);
-                    entry.isMasterPublisher = (ldfFrame.publisher == ldf.nodes.master);
+                    resolveFrame(entry, ldfFrame);
                     break;
                 }
             }

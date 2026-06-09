@@ -45,6 +45,7 @@ struct LinScheduleEntry
     uint8_t dlc              {0};
     uint8_t delayMs          {0};
     bool    isMasterPublisher {false};
+    bool    isSporadic        {false};
 };
 
 class LinDb
