@@ -131,8 +131,8 @@ windeployqt --release cangaroo.exe
   1. Download the [zscanfd.dll device driver](The download link has been added to the `src.pro` file) on the target machine.
   2. Download the [qtzscanfdbus.dll Qt plugin](The download link has been added to the `src.pro` file) on the target machine.
   3. Build with `qmake CONFIG+=zscanfd` (or add `zscanfd` to the Qt Creator qmake arguments).
-  4. Place the `qtzscanfdbus.dll` from `plugin/canbus`
-  5. Place the `zscanfd.dll` from `bin/cangaroo`
+  4. Place the `qtzscanfdbus.dll` to `plugin/canbus`
+  5. Place the `zscanfd.dll` to `bin/cangaroo`
 
 ## ARXML to DBC Conversion
 
