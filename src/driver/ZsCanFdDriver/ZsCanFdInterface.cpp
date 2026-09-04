@@ -69,9 +69,10 @@ QList<CanTiming> ZsCanFdInterface::getAvailableBitrates()
     QList<CanTiming> retval;
 
     const QList<unsigned> nominalRates({5000, 30000, 125000, 500000, 1000000});
-    const QList<unsigned> fdDataRates({1000000, 1200000, 1500000, 2000000, 2400000,
+    const QList<unsigned> fdDataRates({500000, 1000000, 1200000, 1500000, 2000000, 2400000,
                                     3000000, 4000000, 4020100, 5000000, 8000000});
 
+    // 500000 fdbitrate means the device is configured for Classic CAN.
     unsigned i = 0;
     for (unsigned br : nominalRates) {
         // Classic CAN entry
@@ -97,7 +98,7 @@ void ZsCanFdInterface::applyConfig(const MeasurementInterface &mi)
     _bitrate    = mi.bitrate();
     _listenOnly = mi.isListenOnlyMode();
     _fdBitrate  = mi.fdBitrate();
-
+    _isCanFD    = (_fdBitrate == 500000) ? false : true;
     log_info(QString("ZsCanFdInterface %1: configuration stored, bitrate=%2, canfd=%3, fdBitrate=%4")
                  .arg(_name).arg(_bitrate).arg(_isCanFD).arg(_fdBitrate));
 }
