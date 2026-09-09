@@ -63,9 +63,11 @@ public:
     int getNumTxFrames() override;
     int getNumTxErrors() override;
     int getNumTxDropped() override;
+    QString getDetailsStr() const override;
 
     QString getDeviceName() const;
 
+    void setDeviceSerialNumber(QString serial_number);
 private:
     QString           _deviceName;
     QString           _name;
@@ -75,6 +77,7 @@ private:
     bool              _listenOnly;
     bool              _isCanFD;
     std::atomic<bool> _isOpen{false};
+    QString           _deviceSerialNumber;
 
     struct {
         uint64_t rx_count;

@@ -61,7 +61,7 @@ bool ZsCanFdDriver::update()
 
     for (const QCanBusDeviceInfo &info : devices) {
         QString desc = QString("%1 (ch %2)").arg(info.description()).arg(info.channel());
-        createOrUpdateInterface(info.name(), desc);
+        createOrUpdateInterface(info.name(), desc)->setDeviceSerialNumber(info.serialNumber());
     }
 
     return true;

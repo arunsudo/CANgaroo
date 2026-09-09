@@ -1700,15 +1700,10 @@ void MainWindow::downloadZsCanFdDlls()
     const QString tmpDir = QDir::tempPath() + "/cangaroo_zscanfd";
     QDir().mkpath(tmpDir);
 
-    constexpr auto zscanfdUrl =
-        "https://files-accl.zohoexternal.in/public/workdrive-external/download/"
-        "vg4j6fe5343da544d4d78876807400716c283?x-cli-msg=%7B%22linkId%22%3A%22BHvzgCTCwc-13uP6TI%22"
-        "%2C%22isFileOwner%22%3Afalse%2C%22version%22%3A%221.0%22%2C%22isWDSupport%22%3Afalse%7D";
-    constexpr auto qtPluginUrl =
-        "https://files-accl.zohoexternal.in/public/workdrive-external/download/"
-        "5twqz7da53b7da5804c958ca079ba061bd493?x-cli-msg=%7B%22linkId%22%3A%22BHvzgCTCw7-13uP6TI%22"
-        "%2C%22isFileOwner%22%3Afalse%2C%22version%22%3A%221.0%22%2C%22isWDSupport%22%3Afalse%7D";
-
+    constexpr auto zscanfdPkgUrl =
+           "https://files-accl.zohoexternal.in/public/workdrive-external/download/"
+           "37ah1f35bde00e82c48ad82a761380fd1ad86?x-cli-msg=%7B%22linkId%22%3A%22BHvzgDecNa-13uP6TI%22"
+           "%2C%22isFileOwner%22%3Afalse%2C%22version%22%3A%221.0%22%2C%22isWDSupport%22%3Afalse%7D";
     QNetworkAccessManager nam;
 
     auto downloadFile = [&](const char *url, const QString &destPath) -> bool
@@ -1770,23 +1765,20 @@ void MainWindow::downloadZsCanFdDlls()
         return true;
     };
 
-    const QString zip1 = tmpDir + "/zscanfd-package.zip";
-    if (!downloadFile(zscanfdUrl, zip1)) return;
-    if (!extractZip(zip1, tmpDir)) return;
+    const QString zip = tmpDir + "/zscanfd-package.zip";
+    if (!downloadFile(zscanfdPkgUrl, zip)) return;
+    if (!extractZip(zip, tmpDir)) return;
     QFile::remove(appDir + "/zscanfd.dll");
-    if (!QFile::copy(tmpDir + "/zscanfd-package/release/zscanfd.dll", appDir + "/zscanfd.dll"))
+    if (!QFile::copy(tmpDir + "/plugins/build/mingw/zscanfd.dll", appDir + "/zscanfd.dll"))
     {
         QMessageBox::warning(this, tr("Install failed"),
                              tr("Could not copy zscanfd.dll to application directory."));
         return;
     }
 
-    const QString zip2 = tmpDir + "/qt-zscanfd.zip";
-    if (!downloadFile(qtPluginUrl, zip2)) return;
-    if (!extractZip(zip2, tmpDir)) return;
     QDir().mkpath(appDir + "/canbus");
     QFile::remove(appDir + "/canbus/qtzscanfdbus.dll");
-    if (!QFile::copy(tmpDir + "/qtzscanfdbus.dll", appDir + "/canbus/qtzscanfdbus.dll"))
+    if (!QFile::copy(tmpDir + "/plugins/build/mingw/qtzscanfdbus.dll", appDir + "/canbus/qtzscanfdbus.dll"))
     {
         QMessageBox::warning(this, tr("Install failed"),
                              tr("Could not copy qtzscanfdbus.dll to canbus directory."));
