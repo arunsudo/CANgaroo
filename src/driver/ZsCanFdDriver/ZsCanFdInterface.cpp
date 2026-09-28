@@ -117,7 +117,7 @@ void ZsCanFdInterface::open()
 {
     QString errorString;
     _device = QCanBus::instance()->createDevice(
-        QStringLiteral("zscanfd"), _deviceName, &errorString);
+        QStringLiteral("zscanfd"), (_deviceName + "|" + _deviceSerialNumber), &errorString);
 
     if (!_device) {
         log_error(QString("ZsCanFdInterface %1: createDevice failed: %2")
@@ -319,4 +319,14 @@ int ZsCanFdInterface::getNumTxDropped()  { return (int)(_stats.tx_dropped  - _of
 QString ZsCanFdInterface::getDeviceName() const
 {
     return _deviceName;
+}
+
+void ZsCanFdInterface::setDeviceSerialNumber(QString serial_number)
+{
+    _deviceSerialNumber = serial_number;
+}
+
+QString ZsCanFdInterface::getDetailsStr() const
+{
+    return _deviceSerialNumber;
 }
